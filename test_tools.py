@@ -126,6 +126,35 @@ bm.from_mesh(fcube.data)
 assert all(e.is_manifold for e in bm.edges), "el corte libre no quedó sellado/manifold"
 bm.free()
 
+# --- trazo denso: se simplifica antes del boolean y el corte no se cuelga ---
+import math
+
+from sirobuilder.operators import free_cut as fc
+
+bpy.ops.mesh.primitive_cube_add(size=2, location=(50, 0, 0))
+dcube = bpy.context.active_object
+cdata2 = bpy.data.curves.new("SiroContorno", 'CURVE')
+cdata2.dimensions = '3D'
+sp2 = cdata2.splines.new('POLY')
+sp2.points.add(719)
+for i, pt in enumerate(sp2.points):
+    ang = 2 * math.pi * i / 720
+    pt.co = (50 + 0.6 * math.cos(ang), 0.6 * math.sin(ang), 2, 1)
+cobj2 = bpy.data.objects.new("SiroContorno", cdata2)
+bpy.context.collection.objects.link(cobj2)
+cobj2["siro_target"] = dcube.name
+
+assert len(fc._stroke_points(cobj2)) < 80, "el RDP no simplificó el trazo denso"
+
+bpy.ops.siro.free_cut(mode='INSIDE')
+bpy.context.view_layer.update()
+d = dcube.dimensions
+assert abs(d.x - 1.2) < 0.05 and abs(d.z - 2) < 0.01, f"corte circular dims {tuple(d)}"
+bm = bmesh.new()
+bm.from_mesh(dcube.data)
+assert all(e.is_manifold for e in bm.edges), "el corte circular no quedó manifold"
+bm.free()
+
 # --- agrupar: seleccionar una pieza del grupo selecciona el resto ---
 from sirobuilder.operators import group
 

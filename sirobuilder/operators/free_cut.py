@@ -45,8 +45,33 @@ Cuando termines, pulsa Recortar con contorno"""
         return {'FINISHED'}
 
 
+def _rdp(points, tol):
+    """Douglas-Peucker: reduce la polilínea conservando la forma dentro de tol"""
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        a, b = points[i0], points[i1]
+        ab = b - a
+        length = ab.length
+        dmax, imax = tol, -1
+        for i in range(i0 + 1, i1):
+            if length < 1e-9:
+                d = (points[i] - a).length
+            else:
+                d = ab.cross(points[i] - a).length / length
+            if d > dmax:
+                dmax, imax = d, i
+        if imax != -1:
+            keep[imax] = True
+            stack += [(i0, imax), (imax, i1)]
+    return [p for p, k in zip(points, keep) if k]
+
+
 def _stroke_points(contour):
-    """Puntos del trazo en coordenadas de mundo, sin duplicados consecutivos"""
+    """Puntos del trazo en mundo, sin duplicados y simplificados (el trazo a mano
+    alzada trae cientos de puntos; el boolean no necesita más de unas decenas)"""
     mw = contour.matrix_world
     pts = []
     for spline in contour.data.splines:
@@ -60,6 +85,12 @@ def _stroke_points(contour):
             clean.append(p)
     if len(clean) > 1 and (clean[0] - clean[-1]).length < 1e-5:
         clean.pop()
+    while len(clean) > 1000:  # tope antes del RDP, que es O(n²) en el peor caso
+        clean = clean[::2]
+    if len(clean) > 3:
+        lo = Vector((min(p[i] for p in clean) for i in range(3)))
+        hi = Vector((max(p[i] for p in clean) for i in range(3)))
+        clean = _rdp(clean, (hi - lo).length * 0.005)
     return clean
 
 
@@ -77,6 +108,9 @@ def _make_prism(context, points, view_dir, depth):
     extruded = bmesh.ops.extrude_face_region(bm, geom=[face])
     top = [v for v in extruded['geom'] if isinstance(v, bmesh.types.BMVert)]
     bmesh.ops.translate(bm, verts=top, vec=view_dir * (2.0 * depth))
+    ngons = [f for f in bm.faces if len(f.verts) > 4]
+    if ngons:  # tapas trianguladas: los booleans digieren mal ngons cóncavos gigantes
+        bmesh.ops.triangulate(bm, faces=ngons)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 
     mesh = bpy.data.meshes.new(PRISM_NAME)
@@ -87,11 +121,11 @@ def _make_prism(context, points, view_dir, depth):
     return prism
 
 
-def _apply_bool(context, obj, prism, operation):
+def _apply_bool(context, obj, prism, operation, solver):
     mod = obj.modifiers.new("SiroBool", 'BOOLEAN')
     mod.object = prism
     mod.operation = operation
-    mod.solver = 'EXACT'  # corte real: exactitud sobre velocidad
+    mod.solver = solver
     context.view_layer.objects.active = obj
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
@@ -111,6 +145,14 @@ Igual que el corte con plano: resultado sellado y manifold"""
             ('BOTH', "Ambas partes", "Divide en dos objetos separados, ambos sellados"),
         ),
         default='INSIDE',
+    )
+    solver: bpy.props.EnumProperty(
+        name="Calidad",
+        items=(
+            ('FLOAT', "Rápida", "Solver liviano — el indicado para mallas densas como los relieves"),
+            ('EXACT', "Exacta", "Más lento; úsalo solo si el corte rápido deja artefactos"),
+        ),
+        default='FLOAT',
     )
 
     @classmethod
@@ -161,11 +203,12 @@ Igual que el corte con plano: resultado sellado y manifold"""
             other.data = target.data.copy()
             for coll in target.users_collection:
                 coll.objects.link(other)
-            _apply_bool(context, other, prism, 'DIFFERENCE')
-            _apply_bool(context, target, prism, 'INTERSECT')
+            _apply_bool(context, other, prism, 'DIFFERENCE', self.solver)
+            _apply_bool(context, target, prism, 'INTERSECT', self.solver)
         else:
             op = 'INTERSECT' if self.mode == 'INSIDE' else 'DIFFERENCE'
-            _apply_bool(context, target, prism, op)
+            _apply_bool(context, target, prism, op, self.solver)
+        self.report({'INFO'}, f"Corte con {len(points)} puntos de contorno")
 
         prism_data = prism.data
         bpy.data.objects.remove(prism, do_unlink=True)
