@@ -79,7 +79,7 @@ class SIRO_PT_cut(_SiroSection, bpy.types.Panel):
         if cutter is not None:
             layout.label(text="Sólido = se conserva · rejilla = se descarta", icon='INFO')
         if contour is not None:
-            layout.label(text="Dibuja sobre la pieza y pulsa Recortar", icon='INFO')
+            layout.label(text="Línea = cuchillo · trazo cerrado = contorno", icon='INFO')
         if cutter is not None or contour is not None:
             col = layout.column()
             col.scale_y = 1.3

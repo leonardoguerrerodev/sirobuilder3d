@@ -107,14 +107,15 @@ fcube = bpy.context.active_object
 cdata = bpy.data.curves.new("SiroContorno", 'CURVE')
 cdata.dimensions = '3D'
 spline = cdata.splines.new('POLY')
-spline.points.add(3)
-for pt, co in zip(spline.points, ((29.5, -0.5, 2, 1), (30.5, -0.5, 2, 1), (30.5, 0.5, 2, 1), (29.5, 0.5, 2, 1))):
+spline.points.add(4)  # termina cerca del inicio → se detecta como contorno cerrado
+square = ((29.5, -0.5, 2, 1), (30.5, -0.5, 2, 1), (30.5, 0.5, 2, 1), (29.5, 0.5, 2, 1), (29.5, -0.45, 2, 1))
+for pt, co in zip(spline.points, square):
     pt.co = co
 cobj = bpy.data.objects.new("SiroContorno", cdata)
 bpy.context.collection.objects.link(cobj)
 cobj["siro_target"] = fcube.name
 
-bpy.ops.siro.free_cut(mode='INSIDE')
+bpy.ops.siro.free_cut(mode='A')
 bpy.context.view_layer.update()
 
 assert "SiroContorno" not in bpy.data.objects, "el contorno debía borrarse tras recortar"
@@ -146,7 +147,7 @@ cobj2["siro_target"] = dcube.name
 
 assert len(fc._stroke_points(cobj2)) < 80, "el RDP no simplificó el trazo denso"
 
-bpy.ops.siro.free_cut(mode='INSIDE')
+bpy.ops.siro.free_cut(mode='A')
 bpy.context.view_layer.update()
 d = dcube.dimensions
 assert abs(d.x - 1.2) < 0.05 and abs(d.z - 2) < 0.01, f"corte circular dims {tuple(d)}"
@@ -154,6 +155,32 @@ bm = bmesh.new()
 bm.from_mesh(dcube.data)
 assert all(e.is_manifold for e in bm.edges), "el corte circular no quedó manifold"
 bm.free()
+
+# --- cuchillo: línea abierta de lado a lado parte el cubo en dos mitades selladas ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(60, 0, 0))
+kcube = bpy.context.active_object
+kdata = bpy.data.curves.new("SiroContorno", 'CURVE')
+kdata.dimensions = '3D'
+ksp = kdata.splines.new('POLY')
+ksp.points.add(2)
+for pt, co in zip(ksp.points, ((60, -2, 2, 1), (60, 0, 2, 1), (60, 2, 2, 1))):
+    pt.co = co
+kobj = bpy.data.objects.new("SiroContorno", kdata)
+bpy.context.collection.objects.link(kobj)
+kobj["siro_target"] = kcube.name
+
+before = set(bpy.data.objects)
+bpy.ops.siro.free_cut(mode='BOTH')
+bpy.context.view_layer.update()
+new = list(set(bpy.data.objects) - before)
+assert len(new) == 1, f"el cuchillo BOTH debía crear 1 objeto nuevo, creó {len(new)}"
+for half in (kcube, new[0]):
+    bm = bmesh.new()
+    bm.from_mesh(half.data)
+    xs = [v.co.x + half.location.x for v in bm.verts]
+    assert all(e.is_manifold for e in bm.edges), f"mitad {half.name} no quedó sellada"
+    assert (max(xs) <= 60 + 1e-4) or (min(xs) >= 60 - 1e-4), f"mitad {half.name} cruza la línea de corte"
+    bm.free()
 
 # --- agrupar: seleccionar una pieza del grupo selecciona el resto ---
 from sirobuilder.operators import group

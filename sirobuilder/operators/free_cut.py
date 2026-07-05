@@ -8,10 +8,11 @@ PRISM_NAME = "SiroPrisma"
 
 
 class SIRO_OT_draw_contour(bpy.types.Operator):
-    """Paso 1: dibuja a mano alzada el contorno de corte sobre la pieza (mantén presionado el botón izquierdo).
-Cuando termines, pulsa Recortar con contorno"""
+    """Paso 1: dibuja el trazo de corte sobre la pieza a mano alzada (mantén presionado el botón izquierdo).
+Una línea de lado a lado actúa como cuchillo; un contorno cerrado recorta la silueta.
+Cuando termines, pulsa Recortar con trazo"""
     bl_idname = "siro.draw_contour"
-    bl_label = "Dibujar contorno"
+    bl_label = "Dibujar trazo de corte"
     bl_options = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -94,14 +95,39 @@ def _stroke_points(contour):
     return clean
 
 
-def _make_prism(context, points, view_dir, depth):
-    """Silueta del trazo aplanada según la vista y extruida: el cortador del boolean"""
+def _flatten(points, view_dir):
+    """Proyecta los puntos al plano perpendicular a la vista"""
     center = Vector()
     for p in points:
         center += p
     center /= len(points)
-    flat = [p - view_dir * (p - center).dot(view_dir) for p in points]
+    return [p - view_dir * (p - center).dot(view_dir) for p in points]
 
+
+def _is_closed(points):
+    """Trazo cerrado = termina cerca de donde empezó (contorno); si no, es una línea-cuchillo"""
+    lo = Vector((min(p[i] for p in points) for i in range(3)))
+    hi = Vector((max(p[i] for p in points) for i in range(3)))
+    return (points[0] - points[-1]).length < 0.15 * (hi - lo).length
+
+
+def _close_knife(flat, view_dir, reach):
+    """Convierte la línea abierta en un polígono cerrado: extiende ambos extremos
+    más allá de la pieza y cierra por un costado, lejos — el borde que toca la
+    pieza es solo la línea dibujada, como un cuchillo"""
+    d0 = (flat[0] - flat[1]).normalized()
+    d1 = (flat[-1] - flat[-2]).normalized()
+    ext0 = flat[0] + d0 * reach
+    ext1 = flat[-1] + d1 * reach
+    side = (flat[-1] - flat[0]).cross(view_dir)
+    if side.length < 1e-9:
+        return None  # trazo degenerado (empieza y termina en el mismo punto de vista)
+    side.normalize()
+    return [ext0] + flat + [ext1, ext1 + side * reach, ext0 + side * reach]
+
+
+def _make_prism(context, flat, view_dir, depth):
+    """Polígono (ya plano según la vista) extruido: el cortador del boolean"""
     bm = bmesh.new()
     verts = [bm.verts.new(p - view_dir * depth) for p in flat]
     face = bm.faces.new(verts)  # ValueError si el trazo es degenerado
@@ -131,20 +157,21 @@ def _apply_bool(context, obj, prism, operation, solver):
 
 
 class SIRO_OT_free_cut(bpy.types.Operator):
-    """Paso 2: corta la pieza con la silueta dibujada, proyectada desde la vista actual.
-Igual que el corte con plano: resultado sellado y manifold"""
+    """Paso 2: corta la pieza con el trazo dibujado, proyectado desde la vista actual.
+Línea abierta = cuchillo que parte el modelo entero; trazo cerrado = recorte del contorno.
+Resultado sellado y manifold, igual que el corte con plano"""
     bl_idname = "siro.free_cut"
-    bl_label = "Recortar con contorno"
+    bl_label = "Recortar con trazo"
     bl_options = {'REGISTER', 'UNDO'}
 
     mode: bpy.props.EnumProperty(
         name="Conservar",
         items=(
-            ('INSIDE', "Interior del contorno", "Se queda lo de adentro de la silueta"),
-            ('OUTSIDE', "Exterior del contorno", "Se queda lo de afuera de la silueta"),
             ('BOTH', "Ambas partes", "Divide en dos objetos separados, ambos sellados"),
+            ('A', "Un lado (interior)", "Con contorno cerrado: el interior de la silueta"),
+            ('B', "El otro lado (exterior)", "Con contorno cerrado: el exterior de la silueta"),
         ),
-        default='INSIDE',
+        default='BOTH',
     )
     solver: bpy.props.EnumProperty(
         name="Calidad",
@@ -192,10 +219,17 @@ Igual que el corte con plano: resultado sellado y manifold"""
             if rv3d is not None else Vector((0.0, 0.0, -1.0))  # sin viewport: vista superior
         )
         depth = max(*target.dimensions, 1.0) * 3.0
+
+        flat = _flatten(points, view_dir)
+        if not _is_closed(flat):
+            flat = _close_knife(flat, view_dir, depth * 2.0)
+            if flat is None:
+                self.report({'ERROR'}, "Trazo degenerado — dibuja la línea de lado a lado de la pieza")
+                return {'CANCELLED'}
         try:
-            prism = _make_prism(context, points, view_dir, depth)
+            prism = _make_prism(context, flat, view_dir, depth)
         except ValueError:
-            self.report({'ERROR'}, "Contorno inválido — dibújalo de nuevo sin cruzar el trazo")
+            self.report({'ERROR'}, "Trazo inválido — dibújalo de nuevo sin cruzar la línea sobre sí misma")
             return {'CANCELLED'}
 
         if self.mode == 'BOTH':
@@ -206,9 +240,9 @@ Igual que el corte con plano: resultado sellado y manifold"""
             _apply_bool(context, other, prism, 'DIFFERENCE', self.solver)
             _apply_bool(context, target, prism, 'INTERSECT', self.solver)
         else:
-            op = 'INTERSECT' if self.mode == 'INSIDE' else 'DIFFERENCE'
+            op = 'INTERSECT' if self.mode == 'A' else 'DIFFERENCE'
             _apply_bool(context, target, prism, op, self.solver)
-        self.report({'INFO'}, f"Corte con {len(points)} puntos de contorno")
+        self.report({'INFO'}, f"Corte con {len(points)} puntos de trazo")
 
         prism_data = prism.data
         bpy.data.objects.remove(prism, do_unlink=True)
