@@ -35,7 +35,9 @@ class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
 
         sub = obj.modifiers.new(RES_MOD, 'SUBSURF')
         sub.subdivision_type = 'SIMPLE'
-        sub.levels = sub.render_levels = 7  # ponytail: resolución = subsurf simple; grid real si algún día hace falta malla no uniforme
+        # nivel 9 = 513×513 vértices ≈ la densidad del plano de depth_maps.blend (607×607);
+        # ponytail: resolución = subsurf simple; grid real si algún día hace falta malla no uniforme
+        sub.levels = sub.render_levels = 9
 
         # valores calcados de depth_maps.blend (referencia de Leo)
         tex = bpy.data.textures.new(img.name, 'IMAGE')

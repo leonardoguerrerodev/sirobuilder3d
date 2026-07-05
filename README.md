@@ -28,5 +28,6 @@ blender -b -P test_tools.py
 - ✅ Simplificar — Decimate Collapse con preset 50%, reporta caras antes/después.
 - ✅ `depthmap_relief` — plano + Texture + Displace desde imagen; sliders "Suavizado", "Resolución" y "Profundidad (mm)"; "Aplicar relieve" lo baja a malla real.
 - ✅ Fase 2: espejo X/Y/Z (Mirror aplicado en un paso), Modo Acople (snap cara a cara con alineación de rotación), panel Transformar (posición/rotación/dimensiones en mm), corte de forma libre (Knife Project: dibujar contorno → conservar interior/exterior; sin test headless — requiere viewport).
-- ⬜ Fase 3: primitivas rápidas, alinear a la base, overlay de dimensiones.
+- ✅ Fase 3: primitivas rápidas (botones a los operadores nativos), alinear a la base (Z mín = 0 en las seleccionadas), overlay de dimensiones en viewport (toggle; sin test headless — requiere viewport). Defaults del relieve calcados de `depth_maps.blend`, incluida la densidad de malla (nivel 9 ≈ 513×513 ≈ el plano de 607×607 del .blend).
+- ⬜ Fase 4 (nice to have): vaciar/cascarón (FDM), texto 3D de un clic.
 - ⬜ Al terminar la implementación: pasada de pulido de todas las tools.

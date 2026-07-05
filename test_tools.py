@@ -91,4 +91,14 @@ assert ts.use_snap and ts.snap_elements == {'FACE'} and ts.use_snap_align_rotati
 bpy.ops.siro.snap_dock()
 assert not ts.use_snap, "acople no se desactivó"
 
+# --- alinear a la base: z mínimo mundial queda en 0 ---
+from mathutils import Vector
+
+bpy.ops.mesh.primitive_cube_add(size=2, location=(20, 0, 3.7))
+acube = bpy.context.active_object
+bpy.ops.siro.align_base()
+bpy.context.view_layer.update()
+min_z = min((acube.matrix_world @ Vector(c)).z for c in acube.bound_box)
+assert abs(min_z) < 1e-5, f"alinear a la base dejó z mínimo en {min_z}"
+
 print("OK tools")
