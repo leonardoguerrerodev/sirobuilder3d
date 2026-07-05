@@ -14,13 +14,18 @@ Blender → Preferences → Get Extensions → ⌄ → *Install from Disk* → `
 
 El panel aparece en el N-panel del viewport, pestaña **SiroBuilder**.
 
-## Test
+## Tests
 
 ```bash
 blender -b -P test_clip_plane.py
+blender -b -P test_tools.py
 ```
 
 ## Estado
 
-- ✅ `clip_plane` — añadir plano de corte, posicionarlo con G/R, "Cortar": recalcula normales, corta, conserva el lado de la normal, tapa el corte y sella micro-agujeros.
-- ⬜ Reparar malla, Simplificar, `depthmap_relief` (resto del MVP, Fase 1).
+- ✅ `clip_plane` — plano de corte naranja translúcido, posicionarlo con G/R, "Cortar": recalcula normales, corta, conserva el lado de la normal, tapa el corte y sella micro-agujeros.
+- ✅ Reparar malla — sueltos + degenerados + soldado + agujeros + normales, reporta aristas no-manifold antes/después.
+- ✅ Simplificar — Decimate Collapse con preset 50%, reporta caras antes/después.
+- ✅ `depthmap_relief` — "Nuevo relieve desde imagen" arma plano + Texture + Displace; sliders "Suavizado" (Filter Size) y "Resolución"; "Aplicar relieve" lo baja a malla real. **MVP (Fase 1) completo.**
+- ⬜ Fase 2: espejo rápido, modo acople, transformar en mm, slider "Profundidad", corte de forma libre.
+- ⬜ Al terminar la implementación: pasada de pulido de todas las tools.

@@ -6,6 +6,13 @@ import bmesh
 import bpy
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.resolve()))
+import addon_utils
+
+try:
+    addon_utils.disable("bl_ext.user_default.sirobuilder", default_set=False)
+except Exception:
+    pass
+
 import sirobuilder
 
 sirobuilder.register()

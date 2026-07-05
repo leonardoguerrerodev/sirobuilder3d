@@ -31,3 +31,28 @@ class SIRO_PT_main(bpy.types.Panel):
         col.scale_y = 1.6  # botones grandes, estilo 3D Builder
         col.operator("siro.add_cut_plane", icon='MESH_PLANE')
         col.operator("siro.cut", icon='UV_EDGESEL')
+
+        box = layout.box()
+        box.label(text="Malla", icon='TOOL_SETTINGS')
+        col = box.column(align=True)
+        col.scale_y = 1.6
+        col.operator("siro.repair", icon='CHECKMARK')
+        col.operator("siro.simplify", icon='MOD_DECIM')
+
+        box = layout.box()
+        box.label(text="Relieve desde imagen", icon='IMAGE_DATA')
+        col = box.column(align=True)
+        col.scale_y = 1.6
+        col.operator("siro.depthmap_relief", icon='IMPORT')
+        obj = context.active_object
+        if obj is not None and obj.type == 'MESH':
+            disp = obj.modifiers.get("SiroRelieve")
+            sub = obj.modifiers.get("SiroResolucion")
+            if disp is not None:
+                if disp.texture is not None:
+                    box.prop(disp.texture, "filter_size", text="Suavizado")
+                if sub is not None:
+                    box.prop(sub, "levels", text="Resolución")
+                col = box.column()
+                col.scale_y = 1.6
+                col.operator("siro.apply_relief", icon='CHECKMARK')

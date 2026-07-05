@@ -9,6 +9,22 @@ def get_cutter(context):
     return context.scene.objects.get(CUTTER_NAME)
 
 
+def _cutter_material():
+    """Naranja translúcido, visible en Solid y Material Preview"""
+    mat = bpy.data.materials.get(CUTTER_NAME)
+    if mat is None:
+        mat = bpy.data.materials.new(CUTTER_NAME)
+        mat.diffuse_color = (1.0, 0.4, 0.1, 0.35)  # color de viewport en modo Solid
+        mat.use_nodes = True
+        bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+        if bsdf is not None:
+            bsdf.inputs["Base Color"].default_value = (1.0, 0.4, 0.1, 1.0)
+            bsdf.inputs["Alpha"].default_value = 0.35
+        if hasattr(mat, "surface_render_method"):
+            mat.surface_render_method = 'BLENDED'
+    return mat
+
+
 class SIRO_OT_add_cut_plane(bpy.types.Operator):
     """Añade el plano de corte sobre la pieza activa; muévelo/rótalo (G/R) y pulsa Cortar"""
     bl_idname = "siro.add_cut_plane"
@@ -32,8 +48,8 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
         )
         cutter = context.active_object
         cutter.name = CUTTER_NAME
-        cutter.display_type = 'WIRE'
         cutter.show_in_front = True
+        cutter.data.materials.append(_cutter_material())
         cutter["siro_target"] = target.name
         return {'FINISHED'}
 
