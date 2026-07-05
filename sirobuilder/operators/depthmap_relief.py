@@ -25,26 +25,29 @@ class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
             return {'CANCELLED'}
         # espacio de color: se queda en sRGB (decidido en el plan), que es el default al cargar
 
-        bpy.ops.mesh.primitive_plane_add(size=20.0)  # 20 mm de partida con la escena en mm
+        # tamaño base 2 (local -1..1): con coords LOCAL la imagen mapea el plano completo,
+        # igual que en depth_maps.blend; el tamaño real se da con la escala del objeto
+        bpy.ops.mesh.primitive_plane_add(size=2.0)
         obj = context.active_object
         obj.name = "Relieve"
-        if img.size[0] and img.size[1]:
-            obj.scale.y = img.size[1] / img.size[0]  # respeta la proporción de la imagen
+        aspect = img.size[1] / img.size[0] if img.size[0] and img.size[1] else 1.0
+        obj.scale = (10.0, 10.0 * aspect, 1.0)  # 20 mm de ancho, proporción de la imagen
 
         sub = obj.modifiers.new(RES_MOD, 'SUBSURF')
         sub.subdivision_type = 'SIMPLE'
         sub.levels = sub.render_levels = 7  # ponytail: resolución = subsurf simple; grid real si algún día hace falta malla no uniforme
 
+        # valores calcados de depth_maps.blend (referencia de Leo)
         tex = bpy.data.textures.new(img.name, 'IMAGE')
         tex.image = img
         tex.extension = 'CLIP'
-        tex.filter_size = 6.0  # "Suavizado" — valor de partida cercano al 6.22 de referencia
+        tex.filter_size = 6.22  # "Suavizado"
 
         disp = obj.modifiers.new(DISP_MOD, 'DISPLACE')
         disp.texture = tex
-        disp.texture_coords = 'UV'
-        disp.mid_level = 0.0  # negro = base del plano, blanco = altura máxima
-        disp.strength = 2.0   # mm
+        disp.texture_coords = 'LOCAL'
+        disp.mid_level = 0.5
+        disp.strength = 1.0
         return {'FINISHED'}
 
 

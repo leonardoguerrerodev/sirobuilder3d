@@ -69,7 +69,7 @@ bpy.ops.siro.apply_relief()
 
 assert not relief.modifiers, "aplicar relieve debía consumir los modifiers"
 zs = [v.co.z for v in relief.data.vertices]
-assert max(zs) - min(zs) > 0.5, f"el relieve no generó altura: rango z = {max(zs) - min(zs)}"
+assert max(zs) - min(zs) > 0.2, f"el relieve no generó altura: rango z = {max(zs) - min(zs)}"
 
 # --- espejo: duplica la geometría fusionada en espejo ---
 bpy.ops.mesh.primitive_cube_add(size=1, location=(10, 0, 0))
