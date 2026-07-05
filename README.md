@@ -23,9 +23,10 @@ blender -b -P test_tools.py
 
 ## Estado
 
-- ✅ `clip_plane` — plano de corte naranja translúcido, posicionarlo con G/R, "Cortar": recalcula normales, corta, conserva el lado de la normal, tapa el corte y sella micro-agujeros.
+- ✅ `clip_plane` — plano de corte naranja translúcido, posicionarlo con G/R, "Cortar": recalcula normales, corta, tapa y sella. "Conservar": arriba (normal) / abajo / **ambas partes** (divide en dos objetos sellados).
 - ✅ Reparar malla — sueltos + degenerados + soldado + agujeros + normales, reporta aristas no-manifold antes/después.
 - ✅ Simplificar — Decimate Collapse con preset 50%, reporta caras antes/después.
-- ✅ `depthmap_relief` — "Nuevo relieve desde imagen" arma plano + Texture + Displace; sliders "Suavizado" (Filter Size) y "Resolución"; "Aplicar relieve" lo baja a malla real. **MVP (Fase 1) completo.**
-- ⬜ Fase 2: espejo rápido, modo acople, transformar en mm, slider "Profundidad", corte de forma libre.
+- ✅ `depthmap_relief` — plano + Texture + Displace desde imagen; sliders "Suavizado", "Resolución" y "Profundidad (mm)"; "Aplicar relieve" lo baja a malla real.
+- ✅ Fase 2: espejo X/Y/Z (Mirror aplicado en un paso), Modo Acople (snap cara a cara con alineación de rotación), panel Transformar (posición/rotación/dimensiones en mm), corte de forma libre (Knife Project: dibujar contorno → conservar interior/exterior; sin test headless — requiere viewport).
+- ⬜ Fase 3: primitivas rápidas, alinear a la base, overlay de dimensiones.
 - ⬜ Al terminar la implementación: pasada de pulido de todas las tools.

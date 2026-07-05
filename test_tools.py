@@ -71,4 +71,24 @@ assert not relief.modifiers, "aplicar relieve debía consumir los modifiers"
 zs = [v.co.z for v in relief.data.vertices]
 assert max(zs) - min(zs) > 0.5, f"el relieve no generó altura: rango z = {max(zs) - min(zs)}"
 
+# --- espejo: duplica la geometría fusionada en espejo ---
+bpy.ops.mesh.primitive_cube_add(size=1, location=(10, 0, 0))
+mcube = bpy.context.active_object
+mcube.data.transform(__import__("mathutils").Matrix.Translation((1, 0, 0)))  # aleja del origen para que no se solape
+verts_before = len(mcube.data.vertices)
+
+bpy.ops.siro.mirror(axis='X')
+
+assert len(mcube.data.vertices) == 2 * verts_before, "espejo no duplicó la geometría"
+assert not mcube.modifiers, "el modifier Mirror debía quedar aplicado"
+xs = [v.co.x for v in mcube.data.vertices]
+assert min(xs) < 0 < max(xs), "el espejo no quedó a ambos lados del eje"
+
+# --- modo acople: toggle de snapping cara a cara ---
+ts = bpy.context.scene.tool_settings
+bpy.ops.siro.snap_dock()
+assert ts.use_snap and ts.snap_elements == {'FACE'} and ts.use_snap_align_rotation, "acople no se activó"
+bpy.ops.siro.snap_dock()
+assert not ts.use_snap, "acople no se desactivó"
+
 print("OK tools")

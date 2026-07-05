@@ -37,16 +37,40 @@ assert max(zs) > 0.9, "se perdió la parte que debía conservarse"
 assert all(len(e.link_faces) == 2 for e in bm.edges), "malla no manifold: el corte no quedó sellado"
 bm.free()
 
-# invertir lado: se conserva la parte inferior (la pieza ahora ocupa z en [0.5, 1])
+# conservar abajo: se queda la parte inferior (la pieza ahora ocupa z en [0.5, 1])
 bpy.ops.siro.add_cut_plane()
 bpy.data.objects["SiroCutter"].location.z = 0.75
 bpy.context.view_layer.update()
-bpy.ops.siro.cut(invert=True)
+bpy.ops.siro.cut(side='BACK')
 
 bm = bmesh.new()
 bm.from_mesh(cube.data)
-assert max(v.co.z for v in bm.verts) <= 0.75 + 1e-5, "invertir lado no conservó la parte inferior"
-assert all(len(e.link_faces) == 2 for e in bm.edges), "malla no manifold tras corte invertido"
+assert max(v.co.z for v in bm.verts) <= 0.75 + 1e-5, "side=BACK no conservó la parte inferior"
+assert all(len(e.link_faces) == 2 for e in bm.edges), "malla no manifold tras corte BACK"
 bm.free()
+
+# ambas partes: divide en dos objetos sellados
+bpy.ops.mesh.primitive_cube_add(size=2, location=(5, 0, 0))
+cube2 = bpy.context.active_object
+bpy.ops.siro.add_cut_plane()
+bpy.data.objects["SiroCutter"].location.z = 0.3
+bpy.context.view_layer.update()
+
+before = set(bpy.data.objects)
+bpy.ops.siro.cut(side='BOTH')
+new = [o for o in set(bpy.data.objects) - before]
+assert len(new) == 1, f"side=BOTH debía crear 1 objeto nuevo, creó {len(new)}"
+other = new[0]
+
+for obj, is_top in ((cube2, True), (other, False)):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    zs = [v.co.z for v in bm.verts]
+    if is_top:
+        assert min(zs) >= 0.3 - 1e-5, "la mitad superior tiene geometría bajo el plano"
+    else:
+        assert max(zs) <= 0.3 + 1e-5, "la mitad inferior tiene geometría sobre el plano"
+    assert all(len(e.link_faces) == 2 for e in bm.edges), f"{obj.name} no quedó manifold"
+    bm.free()
 
 print("OK clip_plane")
