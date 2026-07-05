@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+
+id = "sirobuilder"
+version = "0.1.0"
+name = "SiroBuilder"
+tagline = "Herramientas estilo 3D Builder para preparar piezas de joyeria"
+maintainer = "Leo <leonardo.gm.dev@gmail.com>"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Mesh", "3D View"]
