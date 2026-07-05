@@ -3,10 +3,33 @@ import bpy
 from mathutils import Vector
 
 CUTTER_NAME = "SiroCutter"
+VOL_NAME = "SiroCutterVol"
+GHOST_NAME = "SiroGhost"
+PREVIEW_MOD = "SiroPreview"
+CONTOUR_NAME = "SiroContorno"
 
 
 def get_cutter(context):
     return context.scene.objects.get(CUTTER_NAME)
+
+
+def remove_preview(context):
+    """Quita el fantasma, el volumen booleano y el modifier de preview de la pieza"""
+    cutter = get_cutter(context)
+    target = None
+    if cutter is not None:
+        target = context.scene.objects.get(cutter.get("siro_target", ""))
+    for name in (GHOST_NAME, VOL_NAME):
+        obj = context.scene.objects.get(name)
+        if obj is not None:
+            data = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if name == VOL_NAME and data is not None and not data.users:
+                bpy.data.meshes.remove(data)
+    if target is not None:
+        mod = target.modifiers.get(PREVIEW_MOD)
+        if mod is not None:
+            target.modifiers.remove(mod)
 
 
 def _cutter_material():
@@ -38,6 +61,7 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
 
     def execute(self, context):
         target = context.active_object
+        remove_preview(context)
         old = get_cutter(context)
         if old is not None:
             bpy.data.objects.remove(old, do_unlink=True)
@@ -50,7 +74,44 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
         cutter.name = CUTTER_NAME
         cutter.show_in_front = True
         cutter.data.materials.append(_cutter_material())
+        cutter.color = (1.0, 0.4, 0.1, 0.5)
         cutter["siro_target"] = target.name
+
+        # volumen del lado descartado (bajo el plano), pegado al cutter
+        bpy.ops.mesh.primitive_cube_add(size=1.0)
+        vol = context.active_object
+        vol.name = VOL_NAME
+        vol.parent = cutter
+        vol.scale = (size * 2.0, size * 2.0, size * 2.0)
+        vol.location = (0.0, 0.0, -size)  # cara superior del cubo al ras del plano
+        vol.hide_set(True)
+        vol.hide_render = True
+
+        # preview en vivo estilo 3D Builder: la pieza muestra solo el lado que
+        # se conserva, y el descartado queda como fantasma en rejilla
+        mod = target.modifiers.new(PREVIEW_MOD, 'BOOLEAN')
+        mod.object = vol
+        mod.operation = 'DIFFERENCE'
+        mod.solver = 'FLOAT'  # solver rápido, suficiente para preview
+        mod.show_render = False
+
+        ghost = target.copy()  # comparte la malla, solo cambian los modifiers
+        ghost.name = GHOST_NAME
+        ghost.modifiers.clear()
+        gmod = ghost.modifiers.new(PREVIEW_MOD, 'BOOLEAN')
+        gmod.object = vol
+        gmod.operation = 'INTERSECT'
+        gmod.solver = 'FLOAT'
+        ghost.display_type = 'WIRE'
+        ghost.hide_select = True
+        ghost.hide_render = True
+        for coll in target.users_collection:
+            coll.objects.link(ghost)
+
+        # dejar el plano activo y seleccionado, listo para moverlo con G/R
+        bpy.ops.object.select_all(action='DESELECT')
+        cutter.select_set(True)
+        context.view_layer.objects.active = cutter
         return {'FINISHED'}
 
 
@@ -119,6 +180,7 @@ class SIRO_OT_cut(bpy.types.Operator):
         if target is None or target.type != 'MESH':
             self.report({'ERROR'}, "No encuentro la pieza a cortar; vuelve a añadir el plano")
             return {'CANCELLED'}
+        remove_preview(context)
 
         no_world = (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
         # plano al espacio local de la pieza: punto con M^-1, normal con M^T
@@ -149,4 +211,19 @@ class SIRO_OT_cut(bpy.types.Operator):
             bpy.data.objects.remove(cutter, do_unlink=True)
         context.view_layer.objects.active = target
         target.select_set(True)
+        return {'FINISHED'}
+
+
+class SIRO_OT_cancel_cut(bpy.types.Operator):
+    """Cancela el corte pendiente: quita el plano, el contorno y el preview sin cortar nada"""
+    bl_idname = "siro.cancel_cut"
+    bl_label = "Cancelar corte"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        remove_preview(context)
+        for name in (CUTTER_NAME, CONTOUR_NAME):
+            obj = context.scene.objects.get(name)
+            if obj is not None:
+                bpy.data.objects.remove(obj, do_unlink=True)
         return {'FINISHED'}

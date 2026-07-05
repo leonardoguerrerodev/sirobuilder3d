@@ -1,6 +1,6 @@
 import bpy
 
-from ..operators import snap_dock
+from ..operators import camera_nav, cut, select_mark, snap_dock
 from . import overlay
 
 
@@ -31,6 +31,8 @@ class SIRO_PT_main(bpy.types.Panel):
         col = layout.column(align=True)
         col.operator("siro.scene_mm", icon='SNAP_INCREMENT')
         col.operator("siro.toggle_dims", icon='DRIVER_DISTANCE', depress=overlay.handler_active())
+        col.operator("siro.cam_mode", icon='VIEW_PAN', depress=camera_nav.nav_active())
+        col.operator("siro.select_mark", icon='RESTRICT_SELECT_OFF', depress=select_mark.mark_active())
 
         box = layout.box()
         box.label(text="Añadir", icon='ADD')
@@ -49,7 +51,20 @@ class SIRO_PT_main(bpy.types.Panel):
         col.scale_y = 1.6  # botones grandes, estilo 3D Builder
         col.operator("siro.add_cut_plane", icon='MESH_PLANE')
         col.operator("siro.cut", icon='UV_EDGESEL')
-        col.operator("siro.free_cut", icon='GREASEPENCIL')
+        col.separator()
+        col.operator("siro.draw_contour", icon='GREASEPENCIL')
+        col.operator("siro.free_cut", icon='SELECT_INTERSECT')
+
+        cutter = context.scene.objects.get(cut.CUTTER_NAME)
+        contour = context.scene.objects.get(cut.CONTOUR_NAME)
+        if cutter is not None:
+            box.label(text="Sólido = se conserva · rejilla = se descarta", icon='INFO')
+        if contour is not None:
+            box.label(text="Dibuja sobre la pieza y pulsa Recortar", icon='INFO')
+        if cutter is not None or contour is not None:
+            col = box.column()
+            col.scale_y = 1.3
+            col.operator("siro.cancel_cut", icon='X')
 
         box = layout.box()
         box.label(text="Malla", icon='TOOL_SETTINGS')

@@ -22,12 +22,16 @@ cube = bpy.context.active_object
 
 bpy.ops.siro.add_cut_plane()
 cutter = bpy.data.objects["SiroCutter"]
+assert "SiroGhost" in bpy.data.objects and "SiroCutterVol" in bpy.data.objects, "falta el preview del corte"
+assert cube.modifiers.get("SiroPreview") is not None, "falta el modifier de preview en la pieza"
 cutter.location.z = 0.5  # normal +Z: se conserva la parte superior
 bpy.context.view_layer.update()
 
 bpy.ops.siro.cut()
 
-assert "SiroCutter" not in bpy.data.objects, "el cutter debía borrarse tras el corte"
+for leftover in ("SiroCutter", "SiroGhost", "SiroCutterVol"):
+    assert leftover not in bpy.data.objects, f"{leftover} debía borrarse tras el corte"
+assert not cube.modifiers, "el modifier de preview debía quitarse tras el corte"
 
 bm = bmesh.new()
 bm.from_mesh(cube.data)
