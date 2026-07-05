@@ -101,4 +101,49 @@ bpy.context.view_layer.update()
 min_z = min((acube.matrix_world @ Vector(c)).z for c in acube.bound_box)
 assert abs(min_z) < 1e-5, f"alinear a la base dejó z mínimo en {min_z}"
 
+# --- corte libre: contorno cuadrado sobre un cubo = galleta 1×1×2 sellada ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(30, 0, 0))
+fcube = bpy.context.active_object
+cdata = bpy.data.curves.new("SiroContorno", 'CURVE')
+cdata.dimensions = '3D'
+spline = cdata.splines.new('POLY')
+spline.points.add(3)
+for pt, co in zip(spline.points, ((29.5, -0.5, 2, 1), (30.5, -0.5, 2, 1), (30.5, 0.5, 2, 1), (29.5, 0.5, 2, 1))):
+    pt.co = co
+cobj = bpy.data.objects.new("SiroContorno", cdata)
+bpy.context.collection.objects.link(cobj)
+cobj["siro_target"] = fcube.name
+
+bpy.ops.siro.free_cut(mode='INSIDE')
+bpy.context.view_layer.update()
+
+assert "SiroContorno" not in bpy.data.objects, "el contorno debía borrarse tras recortar"
+assert "SiroPrisma" not in bpy.data.objects, "el prisma cortador debía borrarse"
+d = fcube.dimensions
+assert abs(d.x - 1) < 0.01 and abs(d.y - 1) < 0.01 and abs(d.z - 2) < 0.01, f"corte libre dims {tuple(d)}"
+bm = bmesh.new()
+bm.from_mesh(fcube.data)
+assert all(e.is_manifold for e in bm.edges), "el corte libre no quedó sellado/manifold"
+bm.free()
+
+# --- agrupar: seleccionar una pieza del grupo selecciona el resto ---
+from sirobuilder.operators import group
+
+bpy.ops.mesh.primitive_cube_add(size=1, location=(40, 0, 0))
+g1 = bpy.context.active_object
+bpy.ops.mesh.primitive_cube_add(size=1, location=(42, 0, 0))
+g2 = bpy.context.active_object
+g1.select_set(True)
+
+bpy.ops.siro.group()
+assert g1.get(group.GROUP_KEY) == g2.get(group.GROUP_KEY) is not None, "agrupar no marcó las piezas"
+
+bpy.ops.object.select_all(action='DESELECT')
+g1.select_set(True)
+group._sync_selection(bpy.context.scene)
+assert g2.select_get(), "seleccionar una pieza del grupo no seleccionó la otra"
+
+bpy.ops.siro.ungroup()
+assert group.GROUP_KEY not in g1.keys() and group.GROUP_KEY not in g2.keys(), "desagrupar no limpió"
+
 print("OK tools")
