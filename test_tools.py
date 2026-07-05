@@ -182,6 +182,32 @@ for half in (kcube, new[0]):
     assert (max(xs) <= 60 + 1e-4) or (min(xs) >= 60 - 1e-4), f"mitad {half.name} cruza la línea de corte"
     bm.free()
 
+# --- restar y fusionar (booleans de 3D Builder) ---
+def _two_cubes(x):
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(x, 0, 0))
+    a = bpy.context.active_object
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(x + 1, 0, 0))
+    b = bpy.context.active_object
+    a.select_set(True)
+    bpy.context.view_layer.objects.active = a  # activa = la que recibe el resultado
+    return a, b
+
+a, b = _two_cubes(70)
+b_name = b.name
+bpy.ops.siro.boolean(operation='DIFFERENCE')
+bpy.context.view_layer.update()
+assert b_name not in bpy.data.objects, "restar debía borrar la pieza usada"
+assert abs(a.dimensions.x - 1) < 1e-4, f"restar dejó ancho {a.dimensions.x}, esperaba 1"
+
+a, b = _two_cubes(80)
+bpy.ops.siro.boolean(operation='UNION')
+bpy.context.view_layer.update()
+assert abs(a.dimensions.x - 3) < 1e-4, f"fusionar dejó ancho {a.dimensions.x}, esperaba 3"
+bm = bmesh.new()
+bm.from_mesh(a.data)
+assert all(e.is_manifold for e in bm.edges), "la fusión no quedó manifold"
+bm.free()
+
 # --- agrupar: seleccionar una pieza del grupo selecciona el resto ---
 from sirobuilder.operators import group
 

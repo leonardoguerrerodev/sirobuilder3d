@@ -2,6 +2,7 @@ import bpy
 
 from .operators import (
     align_base,
+    boolean_ops,
     camera_nav,
     cut,
     depthmap_relief,
@@ -25,6 +26,7 @@ _classes = (
     select_mark.SIRO_OT_select_mark,
     group.SIRO_OT_group,
     group.SIRO_OT_ungroup,
+    boolean_ops.SIRO_OT_boolean,
     repair.SIRO_OT_repair,
     simplify.SIRO_OT_simplify,
     mirror.SIRO_OT_mirror,

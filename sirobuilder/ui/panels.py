@@ -91,7 +91,12 @@ class SIRO_PT_mesh(_SiroSection, bpy.types.Panel):
     bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
-        col = self.layout.column(align=True)
+        layout = self.layout
+        row = layout.row(align=True)
+        row.scale_y = 1.6
+        row.operator("siro.boolean", text="Fusionar", icon='SELECT_EXTEND').operation = 'UNION'
+        row.operator("siro.boolean", text="Restar", icon='SELECT_SUBTRACT').operation = 'DIFFERENCE'
+        col = layout.column(align=True)
         col.scale_y = 1.6
         col.operator("siro.repair", icon='CHECKMARK')
         col.operator("siro.simplify", icon='MOD_DECIM')
