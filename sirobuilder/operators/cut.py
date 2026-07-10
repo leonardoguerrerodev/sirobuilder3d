@@ -75,6 +75,7 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
         cutter = context.active_object
         cutter.name = CUTTER_NAME
         cutter.show_in_front = True
+        cutter.show_transparent = True  # si no, Solid pinta el plano opaco
         cutter.data.materials.append(_cutter_material())
         cutter.color = (0.2, 0.9, 0.3, 0.5)
         cutter["siro_target"] = target.name

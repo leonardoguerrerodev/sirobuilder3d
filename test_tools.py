@@ -63,7 +63,9 @@ img.save()
 
 bpy.ops.siro.depthmap_relief(filepath=img_path)
 relief = bpy.context.active_object
-assert "SiroRelieve" in relief.modifiers and "SiroResolucion" in relief.modifiers
+assert "SiroRelieve" in relief.modifiers, "falta el modifier Displace"
+assert "SiroResolucion" not in relief.modifiers, "no debía quedar Subsurf en vivo"
+assert len(relief.data.vertices) == 607 * 607, f"malla horneada esperaba 607×607 verts, tiene {len(relief.data.vertices)}"
 
 bpy.ops.siro.apply_relief()
 

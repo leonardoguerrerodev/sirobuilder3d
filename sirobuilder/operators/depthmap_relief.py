@@ -2,8 +2,13 @@ import bmesh
 import bpy
 from bpy_extras.io_utils import ImportHelper
 
-RES_MOD = "SiroResolucion"
 DISP_MOD = "SiroRelieve"
+# densidad calcada de depth_maps.blend (malla horneada de 607×607 verts, sin
+# Subsurf): un Subsurf nivel 9 en vivo + Displace encima obliga a Blender a
+# recalcular ~262k caras por CPU en cada evaluación (Displace después de
+# Subsurf desactiva el subdivision rápido por GPU). Hornear la densidad una
+# sola vez al crear el plano es lo que hace fluido a depth_maps.blend.
+GRID_RES = 607
 
 
 class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
@@ -26,18 +31,18 @@ class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
         # espacio de color: se queda en sRGB (decidido en el plan), que es el default al cargar
 
         # tamaño base 2 (local -1..1): con coords LOCAL la imagen mapea el plano completo,
-        # igual que en depth_maps.blend; el tamaño real se da con la escala del objeto
-        bpy.ops.mesh.primitive_plane_add(size=2.0)
+        # igual que en depth_maps.blend; el tamaño real se da con la escala del objeto.
+        # Grid ya horneado a la densidad final (nada de Subsurf en vivo) — ver GRID_RES arriba.
+        # x/y_subdivisions son cortes, no vértices: -1 para dar GRID_RES vértices por lado
+        bpy.ops.mesh.primitive_grid_add(
+            x_subdivisions=GRID_RES - 1, y_subdivisions=GRID_RES - 1, size=2.0
+        )
         obj = context.active_object
         obj.name = "Relieve"
+        # proporción real de la imagen cargada — nunca hardcodeada (a diferencia
+        # del .blend de referencia, que sí la tiene fija)
         aspect = img.size[1] / img.size[0] if img.size[0] and img.size[1] else 1.0
         obj.scale = (2.5, 2.5 * aspect, 1.0)  # 25% del tamaño original (5 mm de ancho)
-
-        sub = obj.modifiers.new(RES_MOD, 'SUBSURF')
-        sub.subdivision_type = 'SIMPLE'
-        # nivel 9 = 513×513 vértices ≈ la densidad del plano de depth_maps.blend (607×607);
-        # ponytail: resolución = subsurf simple; grid real si algún día hace falta malla no uniforme
-        sub.levels = sub.render_levels = 9
 
         # valores calcados de depth_maps.blend (referencia de Leo)
         tex = bpy.data.textures.new(img.name, 'IMAGE')
@@ -66,9 +71,8 @@ class SIRO_OT_apply_relief(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        for name in (RES_MOD, DISP_MOD):
-            if name in obj.modifiers:
-                bpy.ops.object.modifier_apply(modifier=name)
+        if DISP_MOD in obj.modifiers:
+            bpy.ops.object.modifier_apply(modifier=DISP_MOD)
 
         bm = bmesh.new()
         bm.from_mesh(obj.data)

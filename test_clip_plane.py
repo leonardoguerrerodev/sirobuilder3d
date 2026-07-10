@@ -22,16 +22,18 @@ cube = bpy.context.active_object
 
 bpy.ops.siro.add_cut_plane()
 cutter = bpy.data.objects["SiroCutter"]
-assert "SiroGhost" in bpy.data.objects and "SiroCutterVol" in bpy.data.objects, "falta el preview del corte"
-assert cube.modifiers.get("SiroPreview") is not None, "falta el modifier de preview en la pieza"
+ghost_mod = cube.modifiers.get("SiroGhostPreview")
+assert ghost_mod is not None and ghost_mod.type == 'NODES', "falta el modifier de preview (Geometry Nodes) en la pieza"
+assert cube.show_transparent, "la pieza necesita show_transparent para que el fantasma se vea en Solid"
+assert cutter.show_transparent, "el plano cortador necesita show_transparent para verse translúcido en Solid"
 cutter.location.z = 0.5  # normal +Z: se conserva la parte superior
 bpy.context.view_layer.update()
 
 bpy.ops.siro.cut()
 
-for leftover in ("SiroCutter", "SiroGhost", "SiroCutterVol"):
-    assert leftover not in bpy.data.objects, f"{leftover} debía borrarse tras el corte"
-assert not cube.modifiers, "el modifier de preview debía quitarse tras el corte"
+assert "SiroCutter" not in bpy.data.objects, "SiroCutter debía borrarse tras el corte"
+assert cube.modifiers.get("SiroGhostPreview") is None, "el modifier de preview debía quitarse tras el corte"
+assert "SiroGhostFantasma" not in cube.data.materials, "el material fantasma debía quitarse tras el corte"
 
 bm = bmesh.new()
 bm.from_mesh(cube.data)

@@ -157,6 +157,10 @@ def add_ghost_modifier(target, cutter):
     transform de `cutter`. No toca target.data en ningún momento."""
     remove_ghost_preview(target)
 
+    # sin esto, el shading Solid (el modo normal de trabajo) ignora el alfa
+    # del material fantasma y lo pinta opaco — el "fantasma" no se ve
+    target.show_transparent = True
+
     added_base_slot = len(target.data.materials) == 0
     if added_base_slot:
         target.data.materials.append(None)  # slot vacío = gris por defecto de Blender

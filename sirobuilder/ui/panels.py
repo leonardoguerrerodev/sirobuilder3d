@@ -150,13 +150,10 @@ class SIRO_PT_relief(_SiroSection, bpy.types.Panel):
         if obj is None or obj.type != 'MESH':
             return
         disp = obj.modifiers.get("SiroRelieve")
-        sub = obj.modifiers.get("SiroResolucion")
         if disp is None:
             return
         if disp.texture is not None:
             layout.prop(disp.texture, "filter_size", text="Suavizado")
-        if sub is not None:
-            layout.prop(sub, "levels", text="Resolución")
         layout.prop(disp, "strength", text="Profundidad (mm)")
         col = layout.column()
         col.scale_y = 1.6
