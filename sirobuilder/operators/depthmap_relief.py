@@ -31,7 +31,7 @@ class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
         obj = context.active_object
         obj.name = "Relieve"
         aspect = img.size[1] / img.size[0] if img.size[0] and img.size[1] else 1.0
-        obj.scale = (10.0, 10.0 * aspect, 1.0)  # 20 mm de ancho, proporción de la imagen
+        obj.scale = (2.5, 2.5 * aspect, 1.0)  # 25% del tamaño original (5 mm de ancho)
 
         sub = obj.modifiers.new(RES_MOD, 'SUBSURF')
         sub.subdivision_type = 'SIMPLE'

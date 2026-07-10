@@ -77,7 +77,7 @@ class SIRO_PT_cut(_SiroSection, bpy.types.Panel):
         cutter = context.scene.objects.get(cut.CUTTER_NAME)
         contour = context.scene.objects.get(cut.CONTOUR_NAME)
         if cutter is not None:
-            layout.label(text="Sólido = se conserva · rejilla = se descarta", icon='INFO')
+            layout.label(text="Sólido = se conserva · fantasma translúcido = se descarta", icon='INFO')
         if contour is not None:
             layout.label(text="Línea = cuchillo · trazo cerrado = contorno", icon='INFO')
         if cutter is not None or contour is not None:

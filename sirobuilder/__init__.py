@@ -7,6 +7,7 @@ from .operators import (
     cut,
     depthmap_relief,
     free_cut,
+    ghost_preview,
     group,
     mirror,
     repair,
@@ -48,12 +49,20 @@ _classes = (
 
 def register():
     for cls in _classes:
-        bpy.utils.register_class(cls)
+        try:
+            bpy.utils.register_class(cls)
+        except ValueError:
+            # Ya estaba registrada (versión previa del addon quedó cargada en memoria);
+            # la limpiamos y volvemos a registrar la nuestra.
+            bpy.utils.unregister_class(cls)
+            bpy.utils.register_class(cls)
     camera_nav.register_keymap()
     group.register_handler()
+    ghost_preview.register_driver_function()
 
 
 def unregister():
+    ghost_preview.unregister_driver_function()
     overlay.remove_handler()
     select_mark.disable()
     camera_nav.unregister_keymap()
