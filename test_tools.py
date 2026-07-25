@@ -454,4 +454,133 @@ for cls in secciones:
     assert cls.bl_icon in iconos, f"{cls.__name__}: ícono inválido '{cls.bl_icon}'"
 assert len({c.bl_icon for c in secciones}) == len(secciones), "dos secciones comparten ícono"
 
+# --- cortador por forma: cerrado y manifold en ortográfica y en perspectiva ---
+from sirobuilder.operators import shape_cut
+
+
+def _ortho_rays(cuadro, z=50.0):
+    """Rayos paralelos mirando hacia -Z, como una vista ortográfica desde arriba"""
+    return [(Vector((x, y, z)), Vector((0.0, 0.0, -1.0))) for x, y in cuadro]
+
+
+def _persp_rays(cuadro, ojo=Vector((0.0, 0.0, 50.0))):
+    """Rayos que divergen desde un ojo, como una vista en perspectiva"""
+    return [((ojo.copy()), (Vector((x, y, 0.0)) - ojo).normalized()) for x, y in cuadro]
+
+
+def _cerrado(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    abiertas = sum(1 for e in bm.edges if not e.is_manifold)
+    vol = bm.calc_volume(signed=True)
+    bm.free()
+    return abiertas, vol
+
+
+cuadro = [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]
+bpy.ops.mesh.primitive_cube_add(size=2, location=(210, 0, 0))
+sc_cube = bpy.context.active_object
+
+for etiqueta, rays in (("ortográfica", _ortho_rays(cuadro)), ("perspectiva", _persp_rays(cuadro))):
+    rays = [(o + Vector((210, 0, 0)), d) for o, d in rays]
+    cutter = shape_cut.build_cutter(rays, sc_cube)
+    assert cutter is not None, f"{etiqueta}: no se construyó el cortador"
+    abiertas, vol = _cerrado(cutter)
+    assert abiertas == 0, f"{etiqueta}: el cortador quedó abierto ({abiertas} aristas)"
+    assert vol > 0, f"{etiqueta}: el cortador quedó del revés (volumen {vol})"
+    # tiene que atravesar la pieza de lado a lado, no quedarse corto
+    lo = min((cutter.matrix_world @ Vector(c)).z for c in cutter.bound_box)
+    hi = max((cutter.matrix_world @ Vector(c)).z for c in cutter.bound_box)
+    assert lo < -1 and hi > 1, f"{etiqueta}: el cortador no cubre la pieza (z {lo:.1f}..{hi:.1f})"
+    bpy.data.objects.remove(cutter, do_unlink=True)
+
+# un lazo cóncavo (forma de C) también tiene que cerrar bien
+ce = [(-1, -1), (1, -1), (1, -0.6), (-0.4, -0.6), (-0.4, 0.6), (1, 0.6), (1, 1), (-1, 1)]
+cutter = shape_cut.build_cutter([(o + Vector((210, 0, 0)), d) for o, d in _ortho_rays(ce)], sc_cube)
+abiertas, vol = _cerrado(cutter)
+assert abiertas == 0, f"lazo cóncavo: cortador abierto ({abiertas} aristas)"
+assert vol > 0, f"lazo cóncavo: cortador del revés (volumen {vol})"
+bpy.data.objects.remove(cutter, do_unlink=True)
+
+assert shape_cut.build_cutter([], sc_cube) is None, "contorno vacío debía devolver None"
+
+# --- aplicar el corte: Recortar deja 1 pieza sellada, Partir deja 2 ---
+medio = [(-5, -5), (0, -5), (0, 5), (-5, 5)]  # media pieza en X
+
+
+def _cubo_y_rayos(x, cuadro=medio):
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(x, 0, 0))
+    obj = bpy.context.active_object
+    rays = [(o + Vector((x, 0, 0)), d) for o, d in _ortho_rays(cuadro)]
+    return obj, rays
+
+
+obj, rays = _cubo_y_rayos(220)
+res = shape_cut.apply_shape_cut(bpy.context, obj, rays, action='TRIM', keep='IN')
+bpy.context.view_layer.update()
+assert res == [obj], f"Recortar debía dejar 1 pieza, dejó {res}"
+assert abs(obj.dimensions.x - 1) < 1e-4, f"Recortar (interior) dejó ancho {obj.dimensions.x}, esperaba 1"
+assert _cerrado(obj)[0] == 0, "Recortar no dejó la pieza sellada"
+
+obj, rays = _cubo_y_rayos(230)
+shape_cut.apply_shape_cut(bpy.context, obj, rays, action='TRIM', keep='OUT')
+bpy.context.view_layer.update()
+assert abs(obj.dimensions.x - 1) < 1e-4, f"Recortar (exterior) dejó ancho {obj.dimensions.x}, esperaba 1"
+xs = [(obj.matrix_world @ v.co).x for v in obj.data.vertices]
+assert min(xs) > 230 - 1e-4, "Recortar (exterior) se quedó con el lado equivocado"
+
+obj, rays = _cubo_y_rayos(240)
+res = shape_cut.apply_shape_cut(bpy.context, obj, rays, action='SPLIT')
+bpy.context.view_layer.update()
+assert len(res) == 2, f"Partir debía dejar 2 piezas, dejó {len(res)}"
+for mitad in res:
+    assert _cerrado(mitad)[0] == 0, f"la mitad {mitad.name} no quedó sellada"
+    assert abs(mitad.dimensions.x - 1) < 1e-4, f"{mitad.name} quedó de ancho {mitad.dimensions.x}"
+assert res[0].data is not res[1].data, "las dos mitades comparten malla"
+
+# --- modos de forma: contornos 2D cerrados y coherentes ---
+import math as _math
+
+ANCHO, ALTO = 800, 600
+
+rect = shape_cut.shape_points('RECT', [(100, 100), (300, 250)], ANCHO, ALTO)
+assert len(rect) == 4, f"Rectángulo debía dar 4 esquinas, dio {len(rect)}"
+assert set(rect) == {(100, 100), (300, 100), (300, 250), (100, 250)}, f"esquinas mal: {rect}"
+
+eli = shape_cut.shape_points('ELLIPSE', [(100, 100), (300, 200)], ANCHO, ALTO)
+assert len(eli) > 8, "Elipse con muy pocos segmentos"
+cx = sum(x for x, _ in eli) / len(eli)
+cy = sum(y for _, y in eli) / len(eli)
+assert abs(cx - 200) < 1 and abs(cy - 150) < 1, f"Elipse descentrada: ({cx:.1f}, {cy:.1f})"
+radios = [((x - 200) / 100.0, (y - 150) / 50.0) for x, y in eli]
+assert all(abs(_math.hypot(u, v) - 1) < 1e-6 for u, v in radios), "Elipse deformada"
+
+linea = shape_cut.shape_points('LINE', [(400, 300), (500, 300)], ANCHO, ALTO)
+assert len(linea) == 4, f"Línea debía cerrar con 4 puntos, dio {len(linea)}"
+assert min(x for x, _ in linea) < 0 and max(x for x, _ in linea) > ANCHO, \
+    f"la línea-cuchillo no se extiende fuera de la región: {linea}"
+assert not shape_cut.shape_points('LINE', [(10, 10), (10, 10)], ANCHO, ALTO), \
+    "línea degenerada (mismo punto) debía devolver contorno vacío"
+
+# lazo denso: se simplifica, no repite el punto de cierre y conserva la forma
+circulo = [(400 + 100 * _math.cos(t), 300 + 100 * _math.sin(t))
+           for t in (2 * _math.pi * i / 720 for i in range(721))]
+lazo = shape_cut.shape_points('LASSO', circulo, ANCHO, ALTO)
+assert 8 < len(lazo) < 200, f"el lazo no se simplificó: {len(lazo)} puntos de 721"
+assert (Vector(lazo[0]) - Vector(lazo[-1])).length > 1.0, "el lazo repite el punto de cierre"
+assert all(abs(_math.hypot(x - 400, y - 300) - 100) < 5 for x, y in lazo), "el lazo perdió la forma"
+
+poli = shape_cut.shape_points('POLYGON', [(0, 0), (10, 0), (10, 10), (0, 0)], ANCHO, ALTO)
+assert len(poli) == 3, f"Polígono debía descartar el clic de cierre, dio {poli}"
+
+# --- pestaña SiroLab: registrada aparte, sin tocar el toolbar principal ---
+assert hasattr(bpy.types, "SIRO_PT_lab"), "el panel de SiroLab no quedó registrado"
+assert P.SIRO_PT_lab.bl_category == "SiroLab", "SiroLab debía ir en pestaña aparte"
+assert P.SIRO_PT_main.bl_category == "SiroBuilder", "el toolbar principal no se toca"
+assert hasattr(bpy.types, "SIRO_OT_shape_cut"), "el operador de corte por forma no quedó registrado"
+for ident, nombre, desc, icono in shape_cut.SHAPES:
+    assert icono in iconos, f"forma {ident}: ícono inválido '{icono}'"
+for prop in ("siro_shape", "siro_keep", "siro_solver"):
+    assert hasattr(bpy.context.scene, prop), f"falta la propiedad de escena {prop}"
+
 print("OK tools")

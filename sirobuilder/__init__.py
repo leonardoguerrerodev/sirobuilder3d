@@ -12,6 +12,7 @@ from .operators import (
     mirror,
     repair,
     select_mark,
+    shape_cut,
     simplify,
     snap_dock,
 )
@@ -46,6 +47,9 @@ _classes = (
     panels.SIRO_PT_mesh,
     panels.SIRO_PT_place,
     panels.SIRO_PT_relief,
+    # pestaña aparte: herramientas en prueba, todavía fuera del toolbar principal
+    shape_cut.SIRO_OT_shape_cut,
+    panels.SIRO_PT_lab,
 )
 
 
@@ -58,6 +62,7 @@ def register():
             # la limpiamos y volvemos a registrar la nuestra.
             bpy.utils.unregister_class(cls)
             bpy.utils.register_class(cls)
+    panels._register_lab_props()
     camera_nav.register_keymap()
     group.register_handler()
     ghost_preview.register_driver_function()
@@ -69,5 +74,6 @@ def unregister():
     select_mark.disable()
     camera_nav.unregister_keymap()
     group.unregister_handler()
+    panels._unregister_lab_props()
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

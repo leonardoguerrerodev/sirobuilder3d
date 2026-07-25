@@ -1,6 +1,6 @@
 import bpy
 
-from ..operators import camera_nav, cut, select_mark
+from ..operators import camera_nav, cut, select_mark, shape_cut
 from . import overlay
 
 
@@ -201,3 +201,80 @@ class SIRO_PT_relief(_SiroSection, bpy.types.Panel):
         col = layout.column()
         col.scale_y = BOTON
         col.operator("siro.apply_relief", icon='CHECKMARK')
+
+
+# --- SiroLab: pestaña aparte, banco de pruebas de las herramientas nuevas ----
+# Vive en su propia pestaña a propósito: acá se desarrollan y se prueban las
+# herramientas estilo Nomad sin tocar el toolbar principal. Cuando estén
+# sólidas se mueven a las secciones de "SiroBuilder" y este panel se borra.
+
+def _register_lab_props():
+    Scene = bpy.types.Scene
+    Scene.siro_shape = bpy.props.EnumProperty(
+        name="Forma",
+        items=[(i, n, d, ic, k) for k, (i, n, d, ic) in enumerate(shape_cut.SHAPES)],
+        default='LASSO',
+    )
+    Scene.siro_keep = bpy.props.EnumProperty(
+        name="Conservar",
+        items=(
+            ('OUT', "Exterior", "Se queda con lo de fuera de la forma dibujada"),
+            ('IN', "Interior", "Se queda con lo de dentro de la forma dibujada"),
+        ),
+        default='OUT',
+    )
+    Scene.siro_solver = bpy.props.EnumProperty(
+        name="Calidad",
+        items=(
+            ('FLOAT', "Rápida", "Para mallas densas, como los relieves"),
+            ('EXACT', "Exacta", "Más lenta; solo si el corte rápido deja artefactos"),
+        ),
+        default='FLOAT',
+    )
+
+
+def _unregister_lab_props():
+    for prop in ("siro_shape", "siro_keep", "siro_solver"):
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)
+
+
+class SIRO_PT_lab(bpy.types.Panel):
+    """Herramientas nuevas en prueba, todavía fuera del toolbar principal"""
+    bl_label = "Corte por forma"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "SiroLab"
+
+    def draw_header(self, context):
+        self.layout.label(icon='SHADERFX')
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        col = layout.column(align=True)
+        col.label(text="Forma", icon='GP_SELECT_STROKE')
+        grid = col.grid_flow(columns=3, align=True)
+        grid.scale_y = BOTON
+        grid.prop(scene, "siro_shape", expand=True)
+
+        col = layout.column(align=True)
+        col.scale_y = BOTON
+        for accion, texto, icono in (
+            ('TRIM', "Recortar", 'SELECT_SUBTRACT'),
+            ('SPLIT', "Partir", 'MOD_BEVEL'),
+        ):
+            op = col.operator("siro.shape_cut", text=texto, icon=icono)
+            op.shape = scene.siro_shape
+            op.action = accion
+            op.keep = scene.siro_keep
+            op.solver = scene.siro_solver
+
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(scene, "siro_keep")
+        col.prop(scene, "siro_solver")
+
+        _aviso(layout, "Dibuja sobre el viewport · Esc cancela", 'MOUSE_MOVE')
