@@ -5,7 +5,7 @@ from mathutils import Vector
 from . import ghost_preview
 from .ghost_preview import CUTTER_NAME  # noqa: F401  (lo usan los paneles como cut.CUTTER_NAME)
 
-CONTOUR_NAME = "SiroContorno"
+
 # nombres de la versión anterior (preview con boolean en vivo), solo para limpieza
 _LEGACY_VOL_NAME = "SiroCutterVol"
 _LEGACY_GHOST_NAME = "SiroGhost"
@@ -307,14 +307,14 @@ class SIRO_OT_cut(bpy.types.Operator):
 
 
 class SIRO_OT_cancel_cut(bpy.types.Operator):
-    """Cancela el corte pendiente: quita el plano, el contorno y el preview sin cortar nada"""
+    """Cancela el corte pendiente: quita el plano y el preview sin cortar nada"""
     bl_idname = "siro.cancel_cut"
     bl_label = "Cancelar corte"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         remove_preview(context)
-        for name in (CUTTER_NAME, CONTOUR_NAME):
+        for name in (CUTTER_NAME,):
             obj = context.scene.objects.get(name)
             if obj is not None:
                 bpy.data.objects.remove(obj, do_unlink=True)

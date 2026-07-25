@@ -2,6 +2,16 @@ import bmesh
 import bpy
 
 
+def _apply_bool(context, obj, cortador, operation, solver):
+    """Un boolean aplicado de una: lo usan el corte por forma y el relleno"""
+    mod = obj.modifiers.new("SiroBool", 'BOOLEAN')
+    mod.object = cortador
+    mod.operation = operation
+    mod.solver = solver
+    context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+
 def _make_single_user(obj):
     """Copias enlazadas comparten malla y `modifier_apply` se niega a tocarlas."""
     if obj.data.users > 1:

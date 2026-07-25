@@ -1,7 +1,9 @@
 # Correr con: blender -b -P test_tools.py
+import math
 import pathlib
 import sys
 import tempfile
+import time
 
 import bmesh
 import bpy
@@ -191,87 +193,6 @@ bpy.context.view_layer.update()
 min_z = min((acube.matrix_world @ Vector(c)).z for c in acube.bound_box)
 assert abs(min_z) < 1e-5, f"alinear a la base dejó z mínimo en {min_z}"
 
-# --- corte libre: contorno cuadrado sobre un cubo = galleta 1×1×2 sellada ---
-bpy.ops.mesh.primitive_cube_add(size=2, location=(30, 0, 0))
-fcube = bpy.context.active_object
-cdata = bpy.data.curves.new("SiroContorno", 'CURVE')
-cdata.dimensions = '3D'
-spline = cdata.splines.new('POLY')
-spline.points.add(4)  # termina cerca del inicio → se detecta como contorno cerrado
-square = ((29.5, -0.5, 2, 1), (30.5, -0.5, 2, 1), (30.5, 0.5, 2, 1), (29.5, 0.5, 2, 1), (29.5, -0.45, 2, 1))
-for pt, co in zip(spline.points, square):
-    pt.co = co
-cobj = bpy.data.objects.new("SiroContorno", cdata)
-bpy.context.collection.objects.link(cobj)
-cobj["siro_target"] = fcube.name
-
-bpy.ops.siro.free_cut(mode='A')
-bpy.context.view_layer.update()
-
-assert "SiroContorno" not in bpy.data.objects, "el contorno debía borrarse tras recortar"
-assert "SiroPrisma" not in bpy.data.objects, "el prisma cortador debía borrarse"
-d = fcube.dimensions
-assert abs(d.x - 1) < 0.01 and abs(d.y - 1) < 0.01 and abs(d.z - 2) < 0.01, f"corte libre dims {tuple(d)}"
-bm = bmesh.new()
-bm.from_mesh(fcube.data)
-assert all(e.is_manifold for e in bm.edges), "el corte libre no quedó sellado/manifold"
-bm.free()
-
-# --- trazo denso: se simplifica antes del boolean y el corte no se cuelga ---
-import math
-
-from sirobuilder.operators import free_cut as fc
-
-bpy.ops.mesh.primitive_cube_add(size=2, location=(50, 0, 0))
-dcube = bpy.context.active_object
-cdata2 = bpy.data.curves.new("SiroContorno", 'CURVE')
-cdata2.dimensions = '3D'
-sp2 = cdata2.splines.new('POLY')
-sp2.points.add(719)
-for i, pt in enumerate(sp2.points):
-    ang = 2 * math.pi * i / 720
-    pt.co = (50 + 0.6 * math.cos(ang), 0.6 * math.sin(ang), 2, 1)
-cobj2 = bpy.data.objects.new("SiroContorno", cdata2)
-bpy.context.collection.objects.link(cobj2)
-cobj2["siro_target"] = dcube.name
-
-assert len(fc._stroke_points(cobj2)) < 80, "el RDP no simplificó el trazo denso"
-
-bpy.ops.siro.free_cut(mode='A')
-bpy.context.view_layer.update()
-d = dcube.dimensions
-assert abs(d.x - 1.2) < 0.05 and abs(d.z - 2) < 0.01, f"corte circular dims {tuple(d)}"
-bm = bmesh.new()
-bm.from_mesh(dcube.data)
-assert all(e.is_manifold for e in bm.edges), "el corte circular no quedó manifold"
-bm.free()
-
-# --- cuchillo: línea abierta de lado a lado parte el cubo en dos mitades selladas ---
-bpy.ops.mesh.primitive_cube_add(size=2, location=(60, 0, 0))
-kcube = bpy.context.active_object
-kdata = bpy.data.curves.new("SiroContorno", 'CURVE')
-kdata.dimensions = '3D'
-ksp = kdata.splines.new('POLY')
-ksp.points.add(2)
-for pt, co in zip(ksp.points, ((60, -2, 2, 1), (60, 0, 2, 1), (60, 2, 2, 1))):
-    pt.co = co
-kobj = bpy.data.objects.new("SiroContorno", kdata)
-bpy.context.collection.objects.link(kobj)
-kobj["siro_target"] = kcube.name
-
-before = set(bpy.data.objects)
-bpy.ops.siro.free_cut(mode='BOTH')
-bpy.context.view_layer.update()
-new = list(set(bpy.data.objects) - before)
-assert len(new) == 1, f"el cuchillo BOTH debía crear 1 objeto nuevo, creó {len(new)}"
-for half in (kcube, new[0]):
-    bm = bmesh.new()
-    bm.from_mesh(half.data)
-    xs = [v.co.x + half.location.x for v in bm.verts]
-    assert all(e.is_manifold for e in bm.edges), f"mitad {half.name} no quedó sellada"
-    assert (max(xs) <= 60 + 1e-4) or (min(xs) >= 60 - 1e-4), f"mitad {half.name} cruza la línea de corte"
-    bm.free()
-
 # --- restar y fusionar (booleans de 3D Builder) ---
 def _two_cubes(x):
     bpy.ops.mesh.primitive_cube_add(size=2, location=(x, 0, 0))
@@ -437,7 +358,7 @@ assert len(sph.data.vertices) != verts_pre, "cortar no encontró la pieza renomb
 assert gp.MODIFIER_NAME not in sph.modifiers, "el preview debía limpiarse tras cortar"
 
 # --- UI: primitivas de ~30 mm, íconos válidos y paneles registrados ---
-from sirobuilder.operators import shape_cut
+from sirobuilder.operators import extrude_down, shape_cut
 from sirobuilder.ui import panels as P
 
 for idname, texto, icono, props in P.PRIMITIVAS:
@@ -452,17 +373,57 @@ iconos = bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_it
 # hay que barrer el fuente entero, no solo los íconos que el test conoce de nombre.
 import re
 
-for modulo in (P, shape_cut):
+for modulo in (P, shape_cut, extrude_down):
     fuente = pathlib.Path(modulo.__file__).read_text()
-    for icono in re.findall(r"icon\s*=\s*'([A-Z0-9_]+)'", fuente):
-        assert icono in iconos, f"{pathlib.Path(modulo.__file__).name}: ícono inválido '{icono}'"
-secciones = (P.SIRO_PT_add, P.SIRO_PT_transform, P.SIRO_PT_cut,
-             P.SIRO_PT_mesh, P.SIRO_PT_place, P.SIRO_PT_relief)
-for cls in (P.SIRO_PT_main, *secciones):
-    assert hasattr(bpy.types, cls.__name__), f"{cls.__name__} no quedó registrado"
+    # `icon=` cubre botones y etiquetas; los avisos pasan el ícono por posición
+    # y se escapaban del barrido — justo el patrón que dejó el panel vacío
+    for patron in (r"icon\s*=\s*'([A-Z0-9_]+)'", r"_aviso\([^)]*,\s*'([A-Z0-9_]+)'\s*\)"):
+        for icono in re.findall(patron, fuente):
+            assert icono in iconos, f"{pathlib.Path(modulo.__file__).name}: ícono inválido '{icono}'"
+# Una sola pestaña y secciones al ras: ni pestaña de laboratorio ni panel
+# contenedor que repita el nombre de la pestaña y coma ancho al anidar.
+secciones = (P.SIRO_PT_main, P.SIRO_PT_add, P.SIRO_PT_transform, P.SIRO_PT_cut,
+             P.SIRO_PT_shape_cut, P.SIRO_PT_extrude, P.SIRO_PT_mesh,
+             P.SIRO_PT_place, P.SIRO_PT_relief)
 for cls in secciones:
+    assert hasattr(bpy.types, cls.__name__), f"{cls.__name__} no quedó registrado"
+    assert cls.bl_category == "SiroBuilder", f"{cls.__name__} quedó fuera de la pestaña SiroBuilder"
+    assert not getattr(cls, "bl_parent_id", ""), f"{cls.__name__} volvió a anidarse en otro panel"
     assert cls.bl_icon in iconos, f"{cls.__name__}: ícono inválido '{cls.bl_icon}'"
 assert len({c.bl_icon for c in secciones}) == len(secciones), "dos secciones comparten ícono"
+
+# el corte por forma reemplazó al corte libre de dos pasos: no pueden convivir
+for viejo in ("SIRO_OT_draw_contour", "SIRO_OT_free_cut"):
+    assert not hasattr(bpy.types, viejo), f"{viejo} sigue registrado; el corte por forma lo reemplaza"
+
+# Las letras de eje son iconos propios porque Blender no deja colorear texto.
+# Headless NO se puede mirar el `icon_id`: sin interfaz Blender no asigna IDs y
+# devuelve 0 siempre (comprobado). Lo que sí se puede comprobar es que los
+# píxeles quedaron cargados, que los tres glifos son distintos y que cada uno
+# lleva el color de SU eje — que es donde estaría el bug de copiar y pegar.
+from sirobuilder.ui import iconos as ico
+
+assert ico._coleccion is not None, "la colección de iconos no se registró"
+for eje in P.EJES:
+    prev = ico._coleccion[eje]
+    assert prev.is_icon_custom, f"el icono del eje {eje} no quedó marcado como propio"
+    assert tuple(prev.icon_size) == (ico._LADO, ico._LADO), f"eje {eje}: tamaño {tuple(prev.icon_size)}"
+    assert len(prev.icon_pixels_float) == ico._LADO * ico._LADO * 4, f"eje {eje}: faltan píxeles"
+
+pintados = {}
+for eje in P.EJES:
+    px = list(ico._coleccion[eje].icon_pixels_float)
+    opacos = [tuple(px[i:i + 3]) for i in range(0, len(px), 4) if px[i + 3] > 0.5]
+    assert opacos, f"el glifo del eje {eje} salió completamente transparente"
+    assert len(set(opacos)) == 1, f"el glifo del eje {eje} tiene más de un color"
+    pintados[eje] = (opacos[0], len(opacos))
+
+assert len({c for c, _ in pintados.values()}) == 3, "dos ejes comparten color"
+assert len({n for _, n in pintados.values()}) == 3, "dos ejes dibujan el mismo glifo"
+for eje, (color, _) in pintados.items():
+    esperado = ico._color_eje(eje)
+    assert max(abs(a - b) for a, b in zip(color, esperado)) < 1e-4, \
+        f"el eje {eje} no lleva su color de tema: {color} vs {esperado}"
 
 # --- cortador por forma: cerrado y manifold en ortográfica y en perspectiva ---
 def _ortho_rays(cuadro, z=50.0):
@@ -665,14 +626,248 @@ assert len(st.contour()) < 201, "el contorno final sí debe simplificarse"
 st.reset()
 assert st.anclas == [] and not st.armado, "reset no dejó la herramienta limpia"
 
-# --- pestaña SiroLab: registrada aparte, sin tocar el toolbar principal ---
-assert hasattr(bpy.types, "SIRO_PT_lab"), "el panel de SiroLab no quedó registrado"
-assert P.SIRO_PT_lab.bl_category == "SiroLab", "SiroLab debía ir en pestaña aparte"
-assert P.SIRO_PT_main.bl_category == "SiroBuilder", "el toolbar principal no se toca"
+# --- corte por forma: registrado y con íconos válidos ---
 assert hasattr(bpy.types, "SIRO_OT_shape_cut"), "el operador de corte por forma no quedó registrado"
 for ident, nombre, desc, icono in shape_cut.SHAPES:
     assert icono in iconos, f"forma {ident}: ícono inválido '{icono}'"
-for prop in ("siro_shape", "siro_keep", "siro_solver"):
+for prop in ("siro_action", "siro_base_z", "siro_keep", "siro_solver"):
     assert hasattr(bpy.context.scene, prop), f"falta la propiedad de escena {prop}"
+
+# Cada forma tiene que ARRANCAR la herramienta, no solo elegirla: cuando las
+# formas eran un selector, se clickeaban y no pasaba nada (verificado en el
+# Blender de Leo: siro_shape en 'RECT' y ningún corte hecho).
+fuente_lab = pathlib.Path(P.__file__).read_text()
+assert 'grid.operator("siro.shape_cut"' in fuente_lab, \
+    "las formas de SiroLab deben ser botones que lanzan el corte"
+assert "siro_shape" not in fuente_lab, "quedó el selector de forma viejo, que no hacía nada"
+
+
+# --- extrudir hacia abajo: RELLENA hacia abajo, no corta ---
+def _medir(obj):
+    """Volumen, rango de Z, aristas abiertas y la distancia al eje de la pieza
+    del vértice más cercano. Todo en mundo, salvo el radio, que se mide desde
+    el origen de la pieza (las del test están corridas en X para no pisarse)."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.transform(obj.matrix_world)
+    eje = obj.matrix_world.translation
+    zs = [v.co.z for v in bm.verts]
+    datos = (
+        bm.calc_volume(),
+        min(zs), max(zs),
+        sum(1 for e in bm.edges if not e.is_manifold),
+        min(((v.co - eje).xy.length for v in bm.verts), default=0.0),
+    )
+    bm.free()
+    return datos
+
+
+ctx = bpy.context
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_uv_sphere_add(radius=15.0, location=(400, 0, 15))
+esfera = bpy.context.active_object
+assert extrude_down.extrude_down(ctx, esfera, 15.0, 0.0), "el relleno devolvió False en el caso normal"
+vol, zmin, zmax, abiertas, _ = _medir(esfera)
+# media esfera arriba + el cilindro que queda al rellenar bajo el ecuador. La
+# esfera entera son 14137 mm³, así que el assert distingue "rellenó" de "nada".
+esperado = 2 / 3 * math.pi * 15 ** 3 + math.pi * 15 ** 2 * 15
+assert abs(vol - esperado) / esperado < 0.05, f"volumen {vol:.1f} mm³, se esperaba ~{esperado:.1f}"
+assert abs(zmin) < 1e-4, f"el fondo no quedó plano en Z=0 ({zmin})"
+assert abs(zmax - 30) < 1e-3, f"la parte de arriba del plano se movió ({zmax})"
+assert abiertas == 0, f"el relleno dejó la malla abierta ({abiertas} aristas no-manifold)"
+
+# LA "C" DE LEO: el caso que distingue rellenar de cortar. Un cubo de 30 mm con
+# una muesca lateral: como hay pieza por ENCIMA de la muesca, el relleno la
+# tapa y el resultado vuelve a ser el cubo entero. La versión que cortaba en el
+# plano daba bastante menos.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(400, 100, 15))
+ce = bpy.context.active_object
+bpy.ops.mesh.primitive_cube_add(size=2.0, location=(415, 100, 15))
+muesca = bpy.context.active_object
+muesca.scale = (10.0, 20.0, 5.0)  # se lleva x∈[405,415], z∈[10,20] del cubo
+bpy.context.view_layer.update()
+ce.select_set(True)
+bpy.context.view_layer.objects.active = ce
+bpy.ops.siro.boolean(operation='DIFFERENCE', solver='EXACT')
+assert abs(_medir(ce)[0] - 24000) < 500, f"la 'C' de prueba salió mal: {_medir(ce)[0]:.1f} mm³"
+
+assert extrude_down.extrude_down(ctx, ce, 30.0, 0.0), "la 'C': el relleno devolvió False"
+vol_ce, zmin_ce, zmax_ce, abiertas_ce, _ = _medir(ce)
+assert abs(vol_ce - 27000) / 27000 < 0.05, \
+    f"la muesca no se rellenó: {vol_ce:.1f} mm³, se esperaba 27000 (el cubo entero)"
+assert abs(zmin_ce) < 1e-4 and abs(zmax_ce - 30) < 1e-3, f"la 'C' cambió de alto ({zmin_ce}, {zmax_ce})"
+assert abiertas_ce == 0, f"la 'C' quedó abierta ({abiertas_ce} aristas)"
+
+# el complemento: por el agujero de un toro NO hay pieza arriba, así que no se
+# rellena. Es lo que separa "rellenar bajo la pieza" de "extruir la silueta".
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_torus_add(major_radius=12.0, minor_radius=4.0, location=(400, 200, 8))
+toro = bpy.context.active_object
+assert extrude_down.extrude_down(ctx, toro, 12.0, 0.0), "toro: el relleno devolvió False"
+vol_toro, zmin_toro, _, abiertas_toro, rmin_toro = _medir(toro)
+assert abs(zmin_toro) < 1e-4 and abiertas_toro == 0, "toro: fondo o malla mal cerrados"
+assert rmin_toro > 7.5, f"se tapó el agujero del toro (hay geometría a {rmin_toro:.2f} mm del eje)"
+assert vol_toro < 9000, f"toro: {vol_toro:.1f} mm³, demasiado para tener el agujero abierto"
+
+# una pieza rotada rellena igual de vertical: el cálculo va en espacio mundo
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(400, 300, 25))
+cubo_rot = bpy.context.active_object
+cubo_rot.rotation_euler = (0.0, math.radians(30), 0.0)
+bpy.context.view_layer.update()
+alto_rot = _medir(cubo_rot)[2]
+assert extrude_down.extrude_down(ctx, cubo_rot, alto_rot, 0.0), "cubo rotado: el relleno devolvió False"
+_, zmin_rot, zmax_rot, abiertas_rot, _ = _medir(cubo_rot)
+assert abs(zmin_rot) < 1e-4, f"cubo rotado: el fondo no quedó en Z=0 ({zmin_rot})"
+assert abs(zmax_rot - alto_rot) < 1e-3, f"cubo rotado: se movió la parte de arriba ({zmax_rot})"
+assert abiertas_rot == 0, f"cubo rotado: malla abierta ({abiertas_rot})"
+
+# casos borde: no debe tocar la malla si el plano no sirve
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_uv_sphere_add(radius=15.0, location=(400, 400, 15))
+intacta = bpy.context.active_object
+n_verts = len(intacta.data.vertices)
+assert not extrude_down.extrude_down(ctx, intacta, 0.0, 0.0), "plano en el fondo de la pieza debía dar False"
+assert not extrude_down.extrude_down(ctx, intacta, 5.0, 5.0), "fondo == plano debía dar False"
+assert not extrude_down.extrude_down(ctx, intacta, 5.0, 9.0), "fondo por encima del plano debía dar False"
+assert len(intacta.data.vertices) == n_verts, "la malla se tocó pese a devolver False"
+
+# el escalón que muestra el panel tiene que ser el que se usa para muestrear:
+# el número abstracto de la grilla no le dice nada a nadie, porque depende del
+# tamaño de la pieza (la misma resolución en un colgante de 4 mm y en uno de
+# 40 mm da escalones diez veces distintos)
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(600, 200, 15))
+medida = bpy.context.active_object
+paso256 = extrude_down.paso_silueta(medida, 256)
+assert abs(paso256 - 30 * 1.05 / 256) < 1e-6, f"el escalón de una pieza de 30 mm a 256 dio {paso256}"
+assert abs(extrude_down.paso_silueta(medida, 512) - paso256 / 2) < 1e-9, \
+    "duplicar la resolución debería partir el escalón a la mitad"
+
+# EL CASO QUE DESTRABA A LEO: una pieza pesada tiene que rellenarse en segundos.
+# La primera versión barría cara a cara y su sombra se auto-intersecaba, así que
+# esto eran minutos y quedaba rechazado por un techo de caras. Este assert es lo
+# que impide volver a ese planteo.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=7, radius=15.0, location=(400, 500, 15))
+pesada = bpy.context.active_object
+caras_pesada = len(pesada.data.polygons)
+# con estas caras hacia arriba, el barrido cara a cara tardaba 55 s medidos
+assert caras_pesada > 50000, f"la malla de prueba tiene {caras_pesada} caras, hacen falta bastantes más"
+t0 = time.time()
+assert extrude_down.extrude_down(ctx, pesada, 30.0, 0.0), "malla pesada: el relleno devolvió False"
+tardo = time.time() - t0
+vol_p, zmin_p, _, abiertas_p, _ = _medir(pesada)
+assert tardo < 30, f"rellenar {caras_pesada} caras tardó {tardo:.1f}s — el método no escala"
+assert abs(zmin_p) < 1e-4, f"malla pesada: el fondo no quedó en Z=0 ({zmin_p})"
+assert abiertas_p == 0, f"malla pesada: malla abierta ({abiertas_p})"
+esperado_p = 2 / 3 * math.pi * 15 ** 3 + math.pi * 15 ** 2 * 15
+assert abs(vol_p - esperado_p) / esperado_p < 0.05, f"malla pesada: volumen {vol_p:.1f} mm³"
+
+# el plano de altura nace ARRIBA, horizontal, sin poder inclinarse y sin poder
+# salirse de la pieza
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(500, 0, 20))
+pieza = bpy.context.active_object
+bpy.ops.siro.extrude_plane()
+plano = bpy.context.scene.objects.get(gp.CUTTER_NAME)
+assert plano is not None, "el plano de altura no se creó"
+assert abs(plano.location.z - 35.0) < 1e-4, f"el plano debía nacer en el tope de la pieza ({plano.location.z})"
+assert all(abs(a) < 1e-6 for a in plano.rotation_euler), "el plano de altura debía salir horizontal"
+assert all(plano.lock_rotation), "el plano de altura debía quedar bloqueado en rotación"
+
+for intento, tope in ((999.0, 35.0), (-999.0, 5.0)):
+    plano.location.z = intento
+    bpy.context.view_layer.update()
+    real = plano.matrix_world.translation.z
+    assert abs(real - tope) < 1e-4, \
+        f"el plano se salió de la pieza: pedido {intento}, quedó en {real}, se esperaba {tope}"
+
+# y el operador completo rellena hasta el fondo de la escena sin recortar nada
+bpy.context.scene.siro_base_z = 0.0
+plano.location.z = 30.0
+bpy.context.view_layer.update()
+bpy.ops.siro.extrude_down()
+assert bpy.context.scene.objects.get(gp.CUTTER_NAME) is None, "el plano debía limpiarse tras rellenar"
+vol_op, zmin_op, zmax_op, abiertas_op, _ = _medir(pieza)
+assert abs(zmin_op) < 1e-4, f"el operador no rellenó hasta Z=0 ({zmin_op})"
+assert abs(zmax_op - 35) < 1e-3, f"el operador movió la parte de arriba ({zmax_op})"
+assert abs(vol_op - 30 * 30 * 35) / (30 * 30 * 35) < 0.02, \
+    f"el operador no rellenó el cubo entero hasta la base ({vol_op:.1f} mm³)"
+assert abiertas_op == 0, f"el operador dejó la malla abierta ({abiertas_op})"
+
+# rellenar necesita una malla cerrada: sobre una abierta el boolean de unión no
+# puede dar un resultado correcto, así que tiene que decirlo en vez de intentarlo
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(600, 0, 15))
+rota = bpy.context.active_object
+bm = bmesh.new()
+bm.from_mesh(rota.data)
+bm.faces.ensure_lookup_table()
+bmesh.ops.delete(bm, geom=[bm.faces[0]], context='FACES')
+bm.to_mesh(rota.data)
+bm.free()
+bpy.ops.siro.extrude_plane()
+verts_rota = len(rota.data.vertices)
+try:
+    bpy.ops.siro.extrude_down()
+    raise SystemExit("rellenar una malla abierta debía dar error")
+except RuntimeError as err:
+    assert "aristas abiertas" in str(err), f"el error no explica la malla abierta: {err}"
+assert len(rota.data.vertices) == verts_rota, "la malla abierta se tocó pese al error"
+bpy.ops.siro.cancel_cut()
+
+# --- reparar pellizcos: la forma exacta del defecto del cráneo de Leo ---
+# Dos cubos que se tocan por una sola arista: al soldarlos, esa arista queda
+# compartida por 4 caras. No es un agujero ni una cara interior, así que la
+# pasada de Reparar no lo veía — y el mensaje aconsejaba subir el soldado, que
+# ahí no arregla nada.
+from sirobuilder.operators.repair import _pinched_edges
+
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_cube_add(size=10.0, location=(700, 0, 5))
+p1 = bpy.context.active_object
+bpy.ops.mesh.primitive_cube_add(size=10.0, location=(710, 10, 5))
+p2 = bpy.context.active_object
+p1.select_set(True)
+bpy.context.view_layer.objects.active = p1
+bpy.ops.object.join()
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.mesh.remove_doubles(threshold=0.0001)
+bpy.ops.object.mode_set(mode='OBJECT')
+assert _pinched_edges(p1) > 0, "el test necesita una arista pellizcada (compartida por 4 caras)"
+
+bpy.ops.siro.repair()
+
+assert _pinched_edges(p1) == 0, f"reparar dejó {_pinched_edges(p1)} aristas pellizcadas"
+assert _mesh_stats(p1)[1] == 0, f"reparar dejó la malla no-manifold: {_mesh_stats(p1)}"
+
+# el corte por forma empuja su propio paso de deshacer: sin esto, Ctrl+Z se
+# come el paso anterior en vez del corte (no se puede probar headless, el undo
+# global está apagado en background)
+assert "ed.undo_push" in pathlib.Path(shape_cut.__file__).read_text(), \
+    "el corte por forma debe empujar un paso de deshacer por corte"
+
+# Los botones de la toolbar no pueden heredar las propiedades de la última
+# corrida: Leo bajó el ratio de Simplificar a 1 en el panel de rehacer y el
+# botón quedó inservible sin ninguna pista. _boton las resetea a su default.
+for idname in ("siro.simplify", "siro.repair", "siro.boolean", "siro.mirror", "siro.align_base"):
+    assert f'"{idname}"' in fuente_lab, f"{idname} debería estar en el panel"
+    assert f'.operator("{idname}"' not in fuente_lab, \
+        f"{idname} se dibuja con layout.operator: heredaría las props de la última vez"
+    # y el supuesto sobre el que se apoya _boton: toda propiedad escribible del
+    # operador tiene un default legible que se le puede volver a asignar. El
+    # draw() no se puede correr headless, pero esto sí, y es lo que podría
+    # reventarlo (un draw() que revienta deja el panel VACÍO, sin error visible)
+    clase = getattr(bpy.types, "SIRO_OT_" + idname.split(".")[1])
+    for prop in clase.bl_rna.properties:
+        if prop.identifier == "rna_type" or prop.is_readonly:
+            continue
+        assert hasattr(prop, "default"), f"{idname}.{prop.identifier} no tiene default legible"
+
+for op in ("SIRO_OT_extrude_plane", "SIRO_OT_extrude_down"):
+    assert hasattr(bpy.types, op), f"{op} no quedó registrado"
 
 print("OK tools")

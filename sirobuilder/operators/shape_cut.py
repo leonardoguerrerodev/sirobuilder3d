@@ -24,8 +24,7 @@ import bpy
 from mathutils import Vector
 from mathutils.geometry import tessellate_polygon
 
-from .boolean_ops import _apply_pending_modifiers, _make_single_user
-from .free_cut import _apply_bool, _rdp
+from .boolean_ops import _apply_bool, _apply_pending_modifiers, _make_single_user
 
 CUTTER_NAME = "SiroCortador"
 
@@ -78,10 +77,34 @@ def _dedupe(puntos):
     return limpio
 
 
+def _rdp(points, tol):
+    """Douglas-Peucker: reduce la polilínea conservando la forma dentro de tol"""
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        a, b = points[i0], points[i1]
+        ab = b - a
+        length = ab.length
+        dmax, imax = tol, -1
+        for i in range(i0 + 1, i1):
+            if length < 1e-9:
+                d = (points[i] - a).length
+            else:
+                d = ab.cross(points[i] - a).length / length
+            if d > dmax:
+                dmax, imax = d, i
+        if imax != -1:
+            keep[imax] = True
+            stack += [(i0, imax), (imax, i1)]
+    return [p for p, k in zip(points, keep) if k]
+
+
 def _simplify(puntos):
     """Un trazo a mano alzada trae cientos de puntos; el booleano no necesita
-    más de unas decenas. Se reusa el Douglas-Peucker del corte libre, que
-    trabaja con vectores 3D — los puntos de pantalla van con z=0."""
+    más de unas decenas. El Douglas-Peucker trabaja con vectores 3D — los
+    puntos de pantalla van con z=0."""
     limpio = _dedupe(puntos)
     if len(limpio) <= 3:
         return limpio
@@ -469,8 +492,13 @@ Escape o clic derecho cancela sin tocar la pieza"""
             self.report({'ERROR'}, "Forma inválida — vuelve a dibujarla sin cruzar la línea")
             return
         self._cortes += 1
+        verbo = "Partida en 2" if self.action == 'SPLIT' else "Recortada"
+        # Un paso de deshacer POR CORTE. Blender empuja el suyo cuando el
+        # operador termina, y este sigue armado para encadenar cortes: sin esto,
+        # los cortes hechos durante el modal quedaban fuera del stack y el
+        # Ctrl+Z se comía el paso anterior en vez del corte.
+        bpy.ops.ed.undo_push(message=f"{verbo} con forma")
         if not target.data.vertices:
             self.report({'WARNING'}, "El corte dejó la pieza vacía — ¿la forma quedó fuera de la pieza?")
         else:
-            verbo = "Partida en 2" if self.action == 'SPLIT' else "Recortada"
             self.report({'INFO'}, f"{verbo} con {len(puntos)} puntos de contorno")
