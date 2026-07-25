@@ -48,6 +48,68 @@ after = len(cube.data.polygons)
 assert after < before, f"simplificar no redujo caras: {before} → {after}"
 assert not cube.modifiers, "el modifier Decimate debía quedar aplicado"
 
+# --- reparar: pared interior (residuo típico de boolean) debe desaparecer ---
+from sirobuilder.operators.repair import _mesh_stats
+
+bpy.ops.mesh.primitive_cube_add(size=2, location=(160, 0, 0))
+w1 = bpy.context.active_object
+bpy.ops.mesh.primitive_cube_add(size=2, location=(162, 0, 0))
+w2 = bpy.context.active_object
+w1.select_set(True)
+bpy.context.view_layer.objects.active = w1
+bpy.ops.object.join()  # dos cubos pegados en un solo objeto: pared interior en x=161
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.mesh.remove_doubles(threshold=0.0001)
+bpy.ops.object.mode_set(mode='OBJECT')
+assert _mesh_stats(w1)[1] > 0, "el test necesita una pared interior no-manifold"
+
+bpy.ops.siro.repair()
+
+agujeros, no_manifold = _mesh_stats(w1)
+assert no_manifold == 0, f"reparar no quitó la pared interior: {no_manifold} aristas no-manifold"
+assert abs(w1.dimensions.x - 4) < 1e-4, f"reparar deformó la pieza: ancho {w1.dimensions.x}"
+
+# --- reparar: el feedback debe contar los agujeros reales (2 caras borradas = 2) ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(170, 0, 0))
+h = bpy.context.active_object
+bm = bmesh.new()
+bm.from_mesh(h.data)
+bm.faces.ensure_lookup_table()
+opuestas = [f for f in bm.faces if abs(f.normal.z) > 0.9]  # tapa y base: 2 agujeros separados
+bmesh.ops.delete(bm, geom=opuestas, context='FACES')
+bm.to_mesh(h.data)
+bm.free()
+assert _mesh_stats(h)[0] == 2, f"stats contó {_mesh_stats(h)[0]} agujeros, esperaba 2"
+
+bpy.ops.siro.repair()
+
+assert _mesh_stats(h) == (0, 0), f"reparar dejó {_mesh_stats(h)} (agujeros, no-manifold)"
+
+# --- simplificar: malla con ngons (residuo de boolean) también debe reducir ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(150, 0, 0))
+ng_a = bpy.context.active_object
+bpy.ops.object.mode_set(mode='EDIT')
+bpy.ops.mesh.select_all(action='SELECT')
+bpy.ops.mesh.subdivide(number_cuts=6)
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.ops.mesh.primitive_cube_add(size=2, location=(151, 0, 0))
+ng_b = bpy.context.active_object
+ng_a.select_set(True)
+bpy.context.view_layer.objects.active = ng_a
+bpy.ops.siro.boolean(operation='DIFFERENCE', solver='EXACT')
+ngons = sum(1 for p in ng_a.data.polygons if len(p.vertices) > 4)
+assert ngons > 0, "el test necesita ngons del boolean"
+
+from sirobuilder.operators.simplify import _tri_count
+
+ng_before = _tri_count(ng_a)
+
+bpy.ops.siro.simplify(ratio=0.5)
+
+assert _tri_count(ng_a) < ng_before, \
+    f"simplificar no redujo la malla con ngons: {ng_before} → {_tri_count(ng_a)} triángulos"
+
 # --- relieve: gradiente horizontal debe generar altura creciente ---
 img = bpy.data.images.new("depthmap_test", 32, 32)
 pixels = []
@@ -72,19 +134,45 @@ bpy.ops.siro.apply_relief()
 assert not relief.modifiers, "aplicar relieve debía consumir los modifiers"
 zs = [v.co.z for v in relief.data.vertices]
 assert max(zs) - min(zs) > 0.2, f"el relieve no generó altura: rango z = {max(zs) - min(zs)}"
+bm = bmesh.new()
+bm.from_mesh(relief.data)
+abiertas = sum(1 for e in bm.edges if not e.is_manifold)
+bm.free()
+assert abiertas == 0, f"el relieve aplicado quedó abierto ({abiertas} aristas) — no es fusionable"
 
-# --- espejo: duplica la geometría fusionada en espejo ---
-bpy.ops.mesh.primitive_cube_add(size=1, location=(10, 0, 0))
+# --- espejo: refleja la pieza en su lugar, sin duplicarla ---
+def _volume(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    vol = bm.calc_volume(signed=True)
+    bm.free()
+    return vol
+
+
+bpy.ops.mesh.primitive_cube_add(size=2, location=(10, 0, 0))
 mcube = bpy.context.active_object
-mcube.data.transform(__import__("mathutils").Matrix.Translation((1, 0, 0)))  # aleja del origen para que no se solape
+bm = bmesh.new()
+bm.from_mesh(mcube.data)
+bm.verts.ensure_lookup_table()
+bm.verts[0].co.x = -0.2  # muesca asimétrica en el lado -X para poder ver el reflejo
+mella = bm.verts[0].co.copy()
+bm.to_mesh(mcube.data)
+bm.free()
 verts_before = len(mcube.data.vertices)
+dims_before = mcube.dimensions.copy()
+vol_before = _volume(mcube)
+assert mella.x < 0 and vol_before > 0, "el test necesita muesca en -X y volumen positivo"
 
 bpy.ops.siro.mirror(axis='X')
+bpy.context.view_layer.update()
 
-assert len(mcube.data.vertices) == 2 * verts_before, "espejo no duplicó la geometría"
-assert not mcube.modifiers, "el modifier Mirror debía quedar aplicado"
+assert len(mcube.data.vertices) == verts_before, "el espejo duplicó geometría en vez de reflejar"
+assert not mcube.modifiers, "el espejo no debía dejar modificadores"
 xs = [v.co.x for v in mcube.data.vertices]
-assert min(xs) < 0 < max(xs), "el espejo no quedó a ambos lados del eje"
+assert any(abs(x - 0.2) < 1e-5 for x in xs), "la muesca no pasó al lado +X: no se reflejó"
+assert not any(abs(x + 0.2) < 1e-5 for x in xs), "la muesca sigue en -X"
+assert (mcube.dimensions - dims_before).length < 1e-5, "el espejo movió/deformó la pieza"
+assert _volume(mcube) > 0, f"el espejo dejó las normales invertidas (volumen {_volume(mcube)})"
 
 # --- modo acople: toggle de snapping cara a cara ---
 ts = bpy.context.scene.tool_settings
@@ -210,6 +298,82 @@ bm.from_mesh(a.data)
 assert all(e.is_manifold for e in bm.edges), "la fusión no quedó manifold"
 bm.free()
 
+# --- fusionar 3 piezas: queda 1 objeto manifold con el ancho total ---
+cubes = []
+for i in range(3):
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(110 + i, 0, 0))
+    cubes.append(bpy.context.active_object)
+for c in cubes:
+    c.select_set(True)
+bpy.context.view_layer.objects.active = cubes[0]
+names = [c.name for c in cubes[1:]]
+
+bpy.ops.siro.boolean(operation='UNION')
+bpy.context.view_layer.update()
+
+assert not any(n in bpy.data.objects for n in names), "fusionar 3 debía dejar 1 solo objeto"
+assert abs(cubes[0].dimensions.x - 4) < 1e-4, f"fusión de 3 dejó ancho {cubes[0].dimensions.x}, esperaba 4"
+bm = bmesh.new()
+bm.from_mesh(cubes[0].data)
+assert all(e.is_manifold for e in bm.edges), "la fusión de 3 no quedó manifold"
+bm.free()
+
+# --- fusionar con malla multi-usuario (copia enlazada): no explota ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(120, 0, 0))
+mu_a = bpy.context.active_object
+mu_b = mu_a.copy()  # comparte data → modifier_apply se negaría
+bpy.context.collection.objects.link(mu_b)
+mu_b.location.x = 121
+assert mu_a.data.users > 1, "el test necesita malla compartida"
+mu_a.select_set(True)
+mu_b.select_set(True)
+bpy.context.view_layer.objects.active = mu_a
+
+bpy.ops.siro.boolean(operation='UNION')
+bpy.context.view_layer.update()
+
+assert abs(mu_a.dimensions.x - 3) < 1e-4, f"fusión multi-usuario dejó ancho {mu_a.dimensions.x}, esperaba 3"
+
+# --- fusionar con una pieza abierta: la pieza NO se borra (se conserva con aviso) ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(130, 0, 0))
+op_a = bpy.context.active_object
+bpy.ops.mesh.primitive_cube_add(size=2, location=(131, 0, 0))
+op_b = bpy.context.active_object
+bm = bmesh.new()
+bm.from_mesh(op_b.data)
+bm.faces.ensure_lookup_table()
+bmesh.ops.delete(bm, geom=[bm.faces[0]], context='FACES')  # lámina abierta
+bm.to_mesh(op_b.data)
+bm.free()
+op_b_name = op_b.name
+op_a.select_set(True)
+op_b.select_set(True)
+bpy.context.view_layer.objects.active = op_a
+
+bpy.ops.siro.boolean(operation='UNION')
+bpy.context.view_layer.update()
+
+assert op_b_name in bpy.data.objects, "la pieza de malla abierta no debía desaparecer"
+
+# --- fusionar con un relieve vivo en el target: el relieve entra en el resultado ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(140, 0, 0))
+rel_a = bpy.context.active_object
+disp = rel_a.modifiers.new("SiroRelieve", 'DISPLACE')
+disp.mid_level = 0.0
+disp.strength = 2.0  # infla el cubo a ±2.1547 por vértice
+bpy.ops.mesh.primitive_cube_add(size=2, location=(142, 0, 0))
+rel_b = bpy.context.active_object
+rel_a.select_set(True)
+rel_b.select_set(True)
+bpy.context.view_layer.objects.active = rel_a
+
+bpy.ops.siro.boolean(operation='UNION')
+bpy.context.view_layer.update()
+
+assert not rel_a.modifiers, "el relieve pendiente debía hornearse antes del boolean"
+assert abs(rel_a.dimensions.x - 5.1547) < 0.02, \
+    f"la fusión perdió el relieve: ancho {rel_a.dimensions.x}, esperaba 5.15"
+
 # --- agrupar: seleccionar una pieza del grupo selecciona el resto ---
 from sirobuilder.operators import group
 
@@ -229,5 +393,65 @@ assert g2.select_get(), "seleccionar una pieza del grupo no seleccionó la otra"
 
 bpy.ops.siro.ungroup()
 assert group.GROUP_KEY not in g1.keys() and group.GROUP_KEY not in g2.keys(), "desagrupar no limpió"
+
+# --- ghost preview: no se muere al escalar ni al renombrar la pieza ---
+from sirobuilder.operators import ghost_preview as gp
+
+
+def _ghost_faces(obj):
+    """Caras marcadas como 'se descarta' en la malla evaluada (lo que se ve en pantalla)"""
+    deps = bpy.context.evaluated_depsgraph_get()
+    ev = obj.evaluated_get(deps)
+    me = ev.to_mesh()
+    idx = len(obj.data.materials) - 1  # el slot fantasma es el último
+    n = sum(1 for p in me.polygons if p.material_index == idx)
+    ev.to_mesh_clear()
+    return n
+
+
+bpy.ops.mesh.primitive_uv_sphere_add(radius=1, location=(180, 0, 0))
+sph = bpy.context.active_object
+bpy.ops.siro.add_cut_plane()
+cutter = bpy.data.objects[gp.CUTTER_NAME]
+cutter.location.z = 180 * 0 + 0.5  # plano descentrado: el reparto no es 50/50
+bpy.context.view_layer.update()
+
+g0 = _ghost_faces(sph)
+assert 0 < g0 < len(sph.data.polygons), f"el preview no marcó un lado: {g0} caras fantasma"
+
+sph.scale.z = 2.0  # escalar debe re-evaluar el driver (antes quedaba congelado)
+bpy.context.view_layer.update()
+g1 = _ghost_faces(sph)
+assert g1 != g0, f"escalar la pieza dejó el preview congelado ({g0} → {g1} caras fantasma)"
+
+sph.name = "Colgante Sol"  # renombrar rompía el driver en silencio
+bpy.context.view_layer.update()
+g2 = _ghost_faces(sph)
+assert g2 == g1, f"renombrar la pieza rompió el preview ({g1} → {g2} caras fantasma)"
+
+# y cortar sigue encontrando la pieza aunque el nombre guardado ya no exista
+verts_pre = len(sph.data.vertices)
+bpy.ops.siro.cut(side='FRONT')
+bpy.context.view_layer.update()
+assert len(sph.data.vertices) != verts_pre, "cortar no encontró la pieza renombrada"
+assert gp.MODIFIER_NAME not in sph.modifiers, "el preview debía limpiarse tras cortar"
+
+# --- UI: primitivas de ~30 mm, íconos válidos y paneles registrados ---
+from sirobuilder.ui import panels as P
+
+for idname, texto, icono, props in P.PRIMITIVAS:
+    modulo, op = idname.split(".")
+    getattr(getattr(bpy.ops, modulo), op)(location=(200, 0, 0), **props)
+    d = bpy.context.active_object.dimensions
+    assert 28 <= max(d) <= 33, f"{texto} sale de {max(d):.1f} mm, se esperaba ~30"
+
+iconos = bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_items.keys()
+secciones = (P.SIRO_PT_add, P.SIRO_PT_transform, P.SIRO_PT_cut,
+             P.SIRO_PT_mesh, P.SIRO_PT_place, P.SIRO_PT_relief)
+for cls in (P.SIRO_PT_main, *secciones):
+    assert hasattr(bpy.types, cls.__name__), f"{cls.__name__} no quedó registrado"
+for cls in secciones:
+    assert cls.bl_icon in iconos, f"{cls.__name__}: ícono inválido '{cls.bl_icon}'"
+assert len({c.bl_icon for c in secciones}) == len(secciones), "dos secciones comparten ícono"
 
 print("OK tools")

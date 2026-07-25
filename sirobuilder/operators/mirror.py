@@ -1,8 +1,12 @@
+import bmesh
 import bpy
+from mathutils import Matrix, Vector
+
+from .boolean_ops import _make_single_user
 
 
 class SIRO_OT_mirror(bpy.types.Operator):
-    """Duplica la pieza en espejo sobre el eje elegido y la fusiona (Mirror aplicado en un paso)"""
+    """Refleja la pieza sobre el eje elegido: la voltea en su lugar, sin duplicarla ni moverla"""
     bl_idname = "siro.mirror"
     bl_label = "Espejo"
     bl_options = {'REGISTER', 'UNDO'}
@@ -20,7 +24,25 @@ class SIRO_OT_mirror(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        mod = obj.modifiers.new("SiroMirror", 'MIRROR')
-        mod.use_axis = (self.axis == 'X', self.axis == 'Y', self.axis == 'Z')
-        bpy.ops.object.modifier_apply(modifier=mod.name)
+        _make_single_user(obj)
+
+        # reflejar alrededor del centro del bounding box, no del origen: si el
+        # origen está descentrado la pieza saltaría de lugar al voltearse
+        centro = sum((Vector(c) for c in obj.bound_box), Vector()) / 8
+        escala = [1.0, 1.0, 1.0]
+        escala['XYZ'.index(self.axis)] = -1.0
+        obj.data.transform(
+            Matrix.Translation(centro)
+            @ Matrix.Diagonal(escala).to_4x4()
+            @ Matrix.Translation(-centro)
+        )
+
+        # una reflexión invierte el orden de los vértices de cada cara: sin esto
+        # la pieza queda del revés (normales hacia adentro, no imprimible)
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
+        bm.to_mesh(obj.data)
+        bm.free()
+        obj.data.update()
         return {'FINISHED'}

@@ -24,23 +24,40 @@ from mathutils import Vector
 NODEGROUP_NAME = "SiroGhostPreview"
 MODIFIER_NAME = "SiroGhostPreview"
 GHOST_MAT_NAME = "SiroGhostFantasma"
+CUTTER_NAME = "SiroCutter"
 
 _DRIVER_NS_KEY = "siro_ghost_plane_component"
 _ADDED_BASE_SLOT_KEY = "siro_ghost_added_base_slot"
 
 
-def _plane_component(target_name, cutter_name, kind, axis):
+def ghost_target():
+    """La pieza que tiene el preview puesto. Solo hay una: add_cut_plane llama
+    a remove_all_ghost_previews antes de poner el modificador."""
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH' and MODIFIER_NAME in obj.modifiers:
+            return obj
+    return None
+
+
+def _plane_component(kind, axis):
     """Componente (0/1/2) de la co. o normal del plano de corte, en espacio
-    LOCAL de la pieza objetivo. La llaman los drivers; con clear_inner=True en
-    _cut_mesh, dot(pos_local - co, normal) < 0 es el lado que se descarta."""
-    target = bpy.data.objects.get(target_name)
-    cutter = bpy.data.objects.get(cutter_name)
-    if target is None or cutter is None:
+    MUNDO. La llaman los drivers; con clear_inner=True en _cut_mesh,
+    dot(pos - co, normal) < 0 es el lado que se descarta.
+
+    Depende SOLO del plano, nunca de la pieza: un driver que lee la transform
+    del objeto que lo lleva no se re-evalúa a tiempo (el depsgraph no puede
+    ordenarlo contra sí mismo) y el preview quedaba retrasado o congelado. La
+    transform de la pieza la aplica el propio node group con Self Object.
+
+    Tampoco recibe nombres: guardarlos como texto en la expresión mataba el
+    preview en silencio en cuanto la pieza se renombraba (o Blender le
+    agregaba un .001)."""
+    cutter = bpy.data.objects.get(CUTTER_NAME)
+    if cutter is None:
         return 0.0
-    no_world = (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
-    co_local = target.matrix_world.inverted() @ cutter.matrix_world.translation
-    no_local = (target.matrix_world.to_3x3().transposed() @ no_world).normalized()
-    return (co_local if kind == 'CO' else no_local)[axis]
+    if kind == 'CO':
+        return cutter.matrix_world.translation[axis]
+    return (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()[axis]
 
 
 def register_driver_function():
@@ -77,10 +94,13 @@ def _socket_identifier(group, name, in_out='INPUT'):
 
 
 def _build_node_group():
-    """Geometry: por cara, dot(Position - Plane Co, Plane No) < 0 → slot fantasma"""
+    """Geometry: por cara, dot(pos_mundo - Plane Co, Plane No) < 0 → slot fantasma"""
     group = bpy.data.node_groups.get(NODEGROUP_NAME)
     if group is not None:
-        return group
+        if any(n.bl_idname == 'GeometryNodeSelfObject' for n in group.nodes):
+            return group
+        # versión vieja (comparaba en espacio local): se reconstruye
+        bpy.data.node_groups.remove(group)
 
     group = bpy.data.node_groups.new(NODEGROUP_NAME, 'GeometryNodeTree')
     iface = group.interface
@@ -99,12 +119,25 @@ def _build_node_group():
     n_out.location = (300, 0)
 
     n_pos = nodes.new('GeometryNodeInputPosition')
-    n_pos.location = (-460, -160)
+    n_pos.location = (-680, -260)
+
+    # posición a espacio mundo dentro del propio node group: así el plano llega
+    # en coordenadas de mundo y los drivers no necesitan saber nada de la pieza
+    n_self = nodes.new('GeometryNodeSelfObject')
+    n_self.location = (-680, -420)
+    n_info = nodes.new('GeometryNodeObjectInfo')
+    n_info.location = (-500, -420)
+    links.new(n_self.outputs['Self Object'], n_info.inputs['Object'])
+
+    n_world = nodes.new('FunctionNodeTransformPoint')
+    n_world.location = (-300, -300)
+    links.new(n_pos.outputs['Position'], n_world.inputs['Vector'])
+    links.new(n_info.outputs['Transform'], n_world.inputs['Transform'])
 
     n_sub = nodes.new('ShaderNodeVectorMath')
     n_sub.operation = 'SUBTRACT'
-    n_sub.location = (-260, -120)
-    links.new(n_pos.outputs['Position'], n_sub.inputs[0])
+    n_sub.location = (-120, -120)
+    links.new(n_world.outputs['Vector'], n_sub.inputs[0])
     links.new(n_in.outputs['Plane Co'], n_sub.inputs[1])
 
     n_dot = nodes.new('ShaderNodeVectorMath')
@@ -133,7 +166,10 @@ def _add_transform_dep(driver, obj, prefix):
     """Variables 'mudas' solo para marcar dependencia: el driver se re-evalúa
     cuando cambian estos canales, aunque la expresión no las nombre — llama
     directo a la función registrada, que relee matrix_world por su cuenta."""
-    for i, chan in enumerate(('LOC_X', 'LOC_Y', 'LOC_Z', 'ROT_X', 'ROT_Y', 'ROT_Z')):
+    # sin los canales SCALE_*, escalar el plano dejaba el preview congelado
+    canales = ('LOC_X', 'LOC_Y', 'LOC_Z', 'ROT_X', 'ROT_Y', 'ROT_Z',
+               'SCALE_X', 'SCALE_Y', 'SCALE_Z')
+    for i, chan in enumerate(canales):
         var = driver.variables.new()
         var.name = f"{prefix}{i}"
         var.type = 'TRANSFORMS'
@@ -143,13 +179,14 @@ def _add_transform_dep(driver, obj, prefix):
         tgt.transform_space = 'WORLD_SPACE'
 
 
-def _make_driver(mod, socket_id, axis, target, cutter, kind):
+def _make_driver(mod, socket_id, axis, cutter, kind):
     fcurve = mod.driver_add(f'["{socket_id}"]', axis)
     drv = fcurve.driver
     drv.type = 'SCRIPTED'
-    drv.expression = f"{_DRIVER_NS_KEY}('{target.name}', '{cutter.name}', '{kind}', {axis})"
+    drv.expression = f"{_DRIVER_NS_KEY}('{kind}', {axis})"
+    # solo el plano: depender también de la pieza es lo que rompía el preview
+    # (el driver vive en un modificador de la pieza, no puede depender de ella)
     _add_transform_dep(drv, cutter, "c")
-    _add_transform_dep(drv, target, "t")
 
 
 def add_ghost_modifier(target, cutter):
@@ -181,8 +218,8 @@ def add_ghost_modifier(target, cutter):
     mod[slot_id] = ghost_index
 
     for axis in range(3):
-        _make_driver(mod, co_id, axis, target, cutter, 'CO')
-        _make_driver(mod, no_id, axis, target, cutter, 'NO')
+        _make_driver(mod, co_id, axis, cutter, 'CO')
+        _make_driver(mod, no_id, axis, cutter, 'NO')
 
 
 def remove_ghost_preview(obj):

@@ -3,8 +3,8 @@ import bpy
 from mathutils import Vector
 
 from . import ghost_preview
+from .ghost_preview import CUTTER_NAME  # noqa: F401  (lo usan los paneles como cut.CUTTER_NAME)
 
-CUTTER_NAME = "SiroCutter"
 CONTOUR_NAME = "SiroContorno"
 # nombres de la versión anterior (preview con boolean en vivo), solo para limpieza
 _LEGACY_VOL_NAME = "SiroCutterVol"
@@ -264,7 +264,11 @@ class SIRO_OT_cut(bpy.types.Operator):
 
     def execute(self, context):
         cutter = get_cutter(context)
+        # el nombre guardado es solo una pista: si la pieza se renombró, el que
+        # manda es quién tiene puesto el preview fantasma
         target = context.scene.objects.get(cutter.get("siro_target", ""))
+        if target is None:
+            target = ghost_preview.ghost_target()
         if target is None or target.type != 'MESH':
             self.report({'ERROR'}, "No encuentro la pieza a cortar; vuelve a añadir el plano")
             return {'CANCELLED'}

@@ -59,10 +59,17 @@ class SIRO_OT_depthmap_relief(bpy.types.Operator, ImportHelper):
 
 
 class SIRO_OT_apply_relief(bpy.types.Operator):
-    """Convierte el relieve en malla real, lista para recortar el contorno y unir al resto de la pieza"""
+    """Convierte el relieve en malla real y cerrada, lista para recortar el contorno y unir al resto de la pieza"""
     bl_idname = "siro.apply_relief"
     bl_label = "Aplicar relieve"
     bl_options = {'REGISTER', 'UNDO'}
+
+    base_thickness: bpy.props.FloatProperty(
+        name="Grosor de base (mm)",
+        description="Espesor que se le da a la lámina para que sea un sólido fusionable",
+        default=1.0,
+        min=0.1,
+    )
 
     @classmethod
     def poll(cls, context):
@@ -73,6 +80,13 @@ class SIRO_OT_apply_relief(bpy.types.Operator):
         obj = context.active_object
         if DISP_MOD in obj.modifiers:
             bpy.ops.object.modifier_apply(modifier=DISP_MOD)
+
+        # el grid desplazado es una lámina abierta: sin volumen, fusionarlo con
+        # una pieza da basura no-manifold (EXACT) o no hace nada (MANIFOLD)
+        solid = obj.modifiers.new("SiroGrosor", 'SOLIDIFY')
+        solid.thickness = self.base_thickness
+        solid.offset = -1.0  # crece hacia abajo, la cara con relieve no se mueve
+        bpy.ops.object.modifier_apply(modifier=solid.name)
 
         bm = bmesh.new()
         bm.from_mesh(obj.data)

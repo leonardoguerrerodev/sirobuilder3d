@@ -37,12 +37,14 @@ _classes = (
     depthmap_relief.SIRO_OT_apply_relief,
     overlay.SIRO_OT_toggle_dims,
     panels.SIRO_OT_scene_mm,
+    # el orden de registro es el orden en que se dibujan las secciones:
+    # añadir → transformar → cortar → malla → espejo/acople → relieve
     panels.SIRO_PT_main,
     panels.SIRO_PT_add,
+    panels.SIRO_PT_transform,
     panels.SIRO_PT_cut,
     panels.SIRO_PT_mesh,
     panels.SIRO_PT_place,
-    panels.SIRO_PT_transform,
     panels.SIRO_PT_relief,
 )
 
