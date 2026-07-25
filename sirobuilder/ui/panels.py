@@ -254,7 +254,7 @@ class SIRO_PT_lab(bpy.types.Panel):
         scene = context.scene
 
         col = layout.column(align=True)
-        col.label(text="Forma", icon='GP_SELECT_STROKE')
+        col.label(text="Forma", icon='GREASEPENCIL')
         grid = col.grid_flow(columns=3, align=True)
         grid.scale_y = BOTON
         grid.prop(scene, "siro_shape", expand=True)

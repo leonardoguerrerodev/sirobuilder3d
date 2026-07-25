@@ -24,6 +24,7 @@ import bpy
 from mathutils import Vector
 from mathutils.geometry import tessellate_polygon
 
+from .boolean_ops import _apply_pending_modifiers, _make_single_user
 from .free_cut import _apply_bool, _rdp
 
 CUTTER_NAME = "SiroCortador"
@@ -200,7 +201,15 @@ def apply_shape_cut(context, target, rays, action='TRIM', keep='IN', solver='FLO
     TRIM deja una sola pieza (`keep`: 'IN' lo que quedó dentro de la forma,
     'OUT' lo de fuera); SPLIT deja las dos, ambas selladas. Devuelve la lista
     de objetos resultantes, o None si el contorno no dio un cortador válido.
+    Puede lanzar RuntimeError si el booleano falla: lo reporta quien llame.
     """
+    # Mismo saneamiento que Fusionar/Restar: una copia enlazada hace fallar
+    # modifier_apply, y un modificador vivo (el relieve sin aplicar, caso
+    # típico acá) haría que el corte se aplique fuera de orden sobre la malla
+    # base. Va antes de construir el cortador, que mide la pieza ya horneada.
+    _make_single_user(target)
+    _apply_pending_modifiers(context, target)
+
     cutter = build_cutter(rays, target)
     if cutter is None:
         return None
@@ -226,15 +235,98 @@ def apply_shape_cut(context, target, rays, action='TRIM', keep='IN', solver='FLO
     return resultado
 
 
+# --- máquina de estados del trazo (sin Blender, testeable headless) --------
+
+class StrokeState:
+    """Traduce eventos de mouse en un contorno. Vive fuera del operador a
+    propósito: mientras esta lógica estuvo dentro de `modal()` no había forma
+    de que un test la tocara, y por eso pasó el bug que la hacía inútil —
+    el modal se cancelaba solo con el RELEASE del clic que lo había arrancado.
+    """
+
+    def __init__(self, shape, width, height):
+        self.shape = shape
+        self.width = width
+        self.height = height
+        self.anclas = []
+        # Hasta no ver un PRESS propio, la forma no está armada: al lanzar el
+        # operador desde un botón del panel, el RELEASE de ESE clic llega acá.
+        self.armado = False
+
+    @property
+    def libre(self):
+        return self.shape in {'LASSO', 'POLYGON'}
+
+    def event(self, tipo, valor, pos):
+        """Devuelve 'DRAW' (redibujar), 'APPLY', 'CANCEL' o 'IGNORE'."""
+        if tipo in {'ESC', 'RIGHTMOUSE'} and valor == 'PRESS':
+            return 'CANCEL'
+
+        if tipo == 'LEFTMOUSE':
+            if valor == 'PRESS':
+                self.armado = True
+                self.anclas.append(pos)
+                return 'DRAW'
+            if valor == 'RELEASE':
+                if not self.armado:
+                    return 'IGNORE'  # el clic del botón que abrió la herramienta
+                if self.shape == 'POLYGON':
+                    return 'IGNORE'  # el polígono se cierra con Enter, no al soltar
+                self.anclas.append(pos)
+                return 'APPLY'
+            return 'IGNORE'
+
+        if tipo == 'MOUSEMOVE':
+            if not self.armado or self.shape == 'POLYGON':
+                return 'IGNORE'  # el polígono deja orbitar entre clic y clic
+            if self.shape == 'LASSO':
+                self.anclas.append(pos)
+            elif len(self.anclas) > 1:
+                self.anclas[-1] = pos  # las formas de dos anclas arrastran la segunda
+            else:
+                self.anclas.append(pos)
+            return 'DRAW'
+
+        if tipo in {'RET', 'NUMPAD_ENTER'} and valor == 'PRESS':
+            return 'APPLY' if self.armado else 'IGNORE'
+
+        return 'IGNORE'
+
+    def preview(self):
+        """Lo que se dibuja mientras trazás. El lazo y el polígono muestran sus
+        anclas crudas: pasarlas por el Douglas-Peucker en cada redibujado
+        arrastraría el viewport, y de todas formas es lo que la mano dibujó."""
+        if self.libre:
+            return list(self.anclas)
+        return shape_points(self.shape, self.anclas, self.width, self.height)
+
+    def contour(self):
+        """El contorno definitivo, ya simplificado, que va al cortador"""
+        return shape_points(self.shape, self.anclas, self.width, self.height)
+
+    def reset(self):
+        self.anclas = []
+        self.armado = False
+
+
 # --- modal: captura el gesto en pantalla (requiere viewport) ---------------
 
 def _draw_overlay(op):
-    """Dibuja el contorno en curso. Import local de gpu: en headless no hay
-    contexto de GPU y el módulo no se puede usar, pero el resto sí se testea."""
+    """Contorno en curso y aviso de que la herramienta está esperando un trazo.
+    Imports locales: en headless no hay contexto de GPU, pero el resto del
+    módulo sí se testea."""
+    import blf
     import gpu
     from gpu_extras.batch import batch_for_shader
 
-    puntos = op.contorno_en_curso()
+    nombre = dict((i, n) for i, n, _, _ in SHAPES).get(op.shape, op.shape)
+    accion = "Recortar" if op.action == 'TRIM' else "Partir"
+    blf.size(0, 15)
+    blf.position(0, 20, 45, 0)
+    blf.color(0, 1.0, 0.6, 0.2, 1.0)
+    blf.draw(0, f"{accion} · {nombre} — dibuja sobre la pieza · Esc para salir")
+
+    puntos = op.estado.preview()
     if len(puntos) < 2:
         return
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
@@ -290,9 +382,6 @@ Escape o clic derecho cancela sin tocar la pieza"""
         obj = context.active_object
         return obj is not None and obj.type == 'MESH' and context.mode == 'OBJECT'
 
-    def contorno_en_curso(self):
-        return shape_points(self.shape, self._anclas, self._region.width, self._region.height)
-
     def invoke(self, context, event):
         if context.area is None or context.area.type != 'VIEW_3D':
             self.report({'ERROR'}, "Pon el cursor sobre el viewport 3D antes de cortar")
@@ -308,15 +397,15 @@ Escape o clic derecho cancela sin tocar la pieza"""
             self.report({'ERROR'}, "No encuentro la vista 3D")
             return {'CANCELLED'}
 
-        self._target = context.active_object
-        self._anclas = []
-        self._trazando = False
+        self.estado = StrokeState(self.shape, self._region.width, self._region.height)
+        self._cortes = 0  # >0 al salir significa FINISHED, para que el undo agrupe bien
         self._handler = bpy.types.SpaceView3D.draw_handler_add(
             _draw_overlay, (self,), 'WINDOW', 'POST_PIXEL'
         )
+        context.window.cursor_modal_set('CROSSHAIR')
         context.window_manager.modal_handler_add(self)
         context.workspace.status_text_set(
-            "Dibuja la forma · Enter confirma (Polígono) · Escape o clic derecho cancela"
+            "Dibuja la forma · Enter confirma (Polígono) · Escape o clic derecho sale"
         )
         return {'RUNNING_MODAL'}
 
@@ -324,57 +413,43 @@ Escape o clic derecho cancela sin tocar la pieza"""
         if self._handler is not None:
             bpy.types.SpaceView3D.draw_handler_remove(self._handler, 'WINDOW')
             self._handler = None
+        context.window.cursor_modal_restore()
         context.workspace.status_text_set(None)
         self._region.tag_redraw()
 
     def modal(self, context, event):
-        if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
-            self._limpiar(context)
-            return {'CANCELLED'}
-
-        libre = self.shape in {'LASSO', 'POLYGON'}
-        # coordenadas relativas a NUESTRA región, no a la que emitió el evento:
-        # mouse_region_* cambia de origen si el cursor pasa por encima del panel
+        # traductor delgado: toda la lógica del gesto vive en StrokeState, que
+        # sí se puede testear sin viewport
         pos = (event.mouse_x - self._region.x, event.mouse_y - self._region.y)
+        accion = self.estado.event(event.type, event.value, pos)
 
-        if event.type == 'LEFTMOUSE':
-            if event.value == 'PRESS':
-                self._trazando = True
-                self._anclas.append(pos)
-                if self.shape == 'POLYGON':
-                    return {'RUNNING_MODAL'}
-            elif event.value == 'RELEASE' and self.shape != 'POLYGON':
-                self._anclas.append(pos)
-                return self._aplicar(context)
+        if accion == 'CANCEL':
+            self._limpiar(context)
+            return {'FINISHED' if self._cortes else 'CANCELLED'}
+        if accion == 'DRAW':
             self._region.tag_redraw()
             return {'RUNNING_MODAL'}
-
-        if event.type == 'MOUSEMOVE' and self._trazando:
-            # el lazo acumula todo el recorrido; las formas de dos anclas solo
-            # arrastran la segunda. El polígono no hace nada al mover: sus
-            # vértices son los clics, y se dibujan al ponerlos
-            if self.shape == 'LASSO':
-                self._anclas.append(pos)
-            elif not libre and len(self._anclas) > 1:
-                self._anclas[-1] = pos
-            elif not libre:
-                self._anclas.append(pos)
+        if accion == 'APPLY':
+            self._aplicar(context)
+            # la herramienta sigue armada para el corte siguiente, como Nomad
+            self.estado.reset()
             self._region.tag_redraw()
             return {'RUNNING_MODAL'}
-
-        if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
-            return self._aplicar(context)
-
-        return {'RUNNING_MODAL'} if self._trazando else {'PASS_THROUGH'}
+        return {'RUNNING_MODAL'} if self.estado.armado else {'PASS_THROUGH'}
 
     def _aplicar(self, context):
         from bpy_extras import view3d_utils
 
-        puntos = self.contorno_en_curso()
-        self._limpiar(context)
+        puntos = self.estado.contour()
         if len(puntos) < 3:
             self.report({'WARNING'}, "Forma vacía — no se cortó nada")
-            return {'CANCELLED'}
+            return
+
+        # se relee la pieza activa en cada corte: tras un Partir cambia
+        target = context.active_object
+        if target is None or target.type != 'MESH':
+            self.report({'WARNING'}, "No hay pieza activa que cortar")
+            return
 
         rays = [
             (
@@ -383,15 +458,19 @@ Escape o clic derecho cancela sin tocar la pieza"""
             )
             for p in puntos
         ]
-        resultado = apply_shape_cut(
-            context, self._target, rays, self.action, self.keep, self.solver
-        )
+        try:
+            resultado = apply_shape_cut(
+                context, target, rays, self.action, self.keep, self.solver
+            )
+        except RuntimeError as err:
+            self.report({'ERROR'}, f"No se pudo cortar: {err}")
+            return
         if resultado is None:
             self.report({'ERROR'}, "Forma inválida — vuelve a dibujarla sin cruzar la línea")
-            return {'CANCELLED'}
-        if not self._target.data.vertices:
+            return
+        self._cortes += 1
+        if not target.data.vertices:
             self.report({'WARNING'}, "El corte dejó la pieza vacía — ¿la forma quedó fuera de la pieza?")
         else:
             verbo = "Partida en 2" if self.action == 'SPLIT' else "Recortada"
             self.report({'INFO'}, f"{verbo} con {len(puntos)} puntos de contorno")
-        return {'FINISHED'}

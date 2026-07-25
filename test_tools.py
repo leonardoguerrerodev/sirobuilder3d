@@ -437,6 +437,7 @@ assert len(sph.data.vertices) != verts_pre, "cortar no encontró la pieza renomb
 assert gp.MODIFIER_NAME not in sph.modifiers, "el preview debía limpiarse tras cortar"
 
 # --- UI: primitivas de ~30 mm, íconos válidos y paneles registrados ---
+from sirobuilder.operators import shape_cut
 from sirobuilder.ui import panels as P
 
 for idname, texto, icono, props in P.PRIMITIVAS:
@@ -446,6 +447,15 @@ for idname, texto, icono, props in P.PRIMITIVAS:
     assert 28 <= max(d) <= 33, f"{texto} sale de {max(d):.1f} mm, se esperaba ~30"
 
 iconos = bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_items.keys()
+
+# Un ícono inexistente revienta draw() y el panel sale VACÍO, sin error visible:
+# hay que barrer el fuente entero, no solo los íconos que el test conoce de nombre.
+import re
+
+for modulo in (P, shape_cut):
+    fuente = pathlib.Path(modulo.__file__).read_text()
+    for icono in re.findall(r"icon\s*=\s*'([A-Z0-9_]+)'", fuente):
+        assert icono in iconos, f"{pathlib.Path(modulo.__file__).name}: ícono inválido '{icono}'"
 secciones = (P.SIRO_PT_add, P.SIRO_PT_transform, P.SIRO_PT_cut,
              P.SIRO_PT_mesh, P.SIRO_PT_place, P.SIRO_PT_relief)
 for cls in (P.SIRO_PT_main, *secciones):
@@ -455,9 +465,6 @@ for cls in secciones:
 assert len({c.bl_icon for c in secciones}) == len(secciones), "dos secciones comparten ícono"
 
 # --- cortador por forma: cerrado y manifold en ortográfica y en perspectiva ---
-from sirobuilder.operators import shape_cut
-
-
 def _ortho_rays(cuadro, z=50.0):
     """Rayos paralelos mirando hacia -Z, como una vista ortográfica desde arriba"""
     return [(Vector((x, y, z)), Vector((0.0, 0.0, -1.0))) for x, y in cuadro]
@@ -538,6 +545,32 @@ for mitad in res:
     assert abs(mitad.dimensions.x - 1) < 1e-4, f"{mitad.name} quedó de ancho {mitad.dimensions.x}"
 assert res[0].data is not res[1].data, "las dos mitades comparten malla"
 
+# malla multi-usuario: modifier_apply se negaría, hay que desligarla antes
+bpy.ops.mesh.primitive_cube_add(size=2, location=(250, 0, 0))
+mu = bpy.context.active_object
+gemelo = mu.copy()  # comparte data
+bpy.context.collection.objects.link(gemelo)
+gemelo.location.x = 253
+assert mu.data.users > 1, "el test necesita malla compartida"
+rays = [(o + Vector((250, 0, 0)), d) for o, d in _ortho_rays(medio)]
+shape_cut.apply_shape_cut(bpy.context, mu, rays, action='TRIM', keep='IN')
+bpy.context.view_layer.update()
+assert abs(mu.dimensions.x - 1) < 1e-4, f"corte multi-usuario dejó ancho {mu.dimensions.x}"
+assert abs(gemelo.dimensions.x - 2) < 1e-4, "el corte se llevó puesta la copia enlazada"
+
+# relieve vivo: el corte tiene que hornearlo, no aplicarse sobre la malla base
+bpy.ops.mesh.primitive_cube_add(size=2, location=(260, 0, 0))
+rv = bpy.context.active_object
+disp = rv.modifiers.new("SiroRelieve", 'DISPLACE')
+disp.mid_level, disp.strength = 0.0, 2.0  # infla el cubo a ±2.1547 por vértice
+ancho = [(-9, -9), (0, -9), (0, 9), (-9, 9)]
+rays = [(o + Vector((260, 0, 0)), d) for o, d in _ortho_rays(ancho)]
+shape_cut.apply_shape_cut(bpy.context, rv, rays, action='TRIM', keep='IN')
+bpy.context.view_layer.update()
+assert not rv.modifiers, "el relieve pendiente debía hornearse antes del corte"
+assert abs(rv.dimensions.z - 4.3094) < 0.02, \
+    f"el corte perdió el relieve: alto {rv.dimensions.z}, esperaba 4.31"
+
 # --- modos de forma: contornos 2D cerrados y coherentes ---
 import math as _math
 
@@ -572,6 +605,65 @@ assert all(abs(_math.hypot(x - 400, y - 300) - 100) < 5 for x, y in lazo), "el l
 
 poli = shape_cut.shape_points('POLYGON', [(0, 0), (10, 0), (10, 10), (0, 0)], ANCHO, ALTO)
 assert len(poli) == 3, f"Polígono debía descartar el clic de cierre, dio {poli}"
+
+# --- máquina de estados del trazo: el ciclo de eventos, sin viewport ---
+def _estado(shape='LASSO'):
+    return shape_cut.StrokeState(shape, ANCHO, ALTO)
+
+
+# EL bug: el operador se lanza desde un botón del panel, así que el RELEASE de
+# ESE clic llega al modal recién instalado. Si se toma como fin del trazo, la
+# herramienta se cancela sola y "no hace nada".
+st = _estado()
+assert st.event('LEFTMOUSE', 'RELEASE', (10, 10)) == 'IGNORE', \
+    "el RELEASE del clic que abrió la herramienta no debe aplicar nada"
+assert st.anclas == [], "ese RELEASE tampoco debe dejar anclas sueltas"
+assert st.event('LEFTMOUSE', 'PRESS', (10, 10)) == 'DRAW', "tras ignorarlo debe poder trazarse"
+
+# lazo: press → moves → release aplica
+st = _estado('LASSO')
+assert st.event('LEFTMOUSE', 'PRESS', (10, 10)) == 'DRAW'
+for i in range(5):
+    assert st.event('MOUSEMOVE', 'PRESS', (20 + i * 10, 40)) == 'DRAW'
+assert st.event('LEFTMOUSE', 'RELEASE', (10, 40)) == 'APPLY'
+assert len(st.anclas) == 7, f"el lazo perdió puntos del recorrido: {len(st.anclas)}"
+
+# formas de dos anclas: el movimiento arrastra la segunda, no acumula
+st = _estado('RECT')
+st.event('LEFTMOUSE', 'PRESS', (100, 100))
+for destino in ((150, 150), (200, 200), (300, 250)):
+    st.event('MOUSEMOVE', 'PRESS', destino)
+assert len(st.anclas) == 2, f"Rectángulo debía guardar 2 anclas, guardó {len(st.anclas)}"
+assert st.event('LEFTMOUSE', 'RELEASE', (300, 250)) == 'APPLY'
+assert len(st.contour()) == 4, "el rectángulo no salió de 4 esquinas"
+
+# polígono: se cierra con Enter, no al soltar, y deja orbitar entre clics
+st = _estado('POLYGON')
+st.event('LEFTMOUSE', 'PRESS', (10, 10))
+assert st.event('LEFTMOUSE', 'RELEASE', (10, 10)) == 'IGNORE', "el polígono no se cierra al soltar"
+assert st.event('MOUSEMOVE', 'PRESS', (50, 50)) == 'IGNORE', "el polígono debe dejar orbitar"
+st.event('LEFTMOUSE', 'PRESS', (100, 10))
+st.event('LEFTMOUSE', 'PRESS', (100, 100))
+assert st.event('RET', 'PRESS', (0, 0)) == 'APPLY', "Enter debía cerrar el polígono"
+assert len(st.contour()) == 3
+
+# Enter sin haber trazado nada no dispara un corte
+assert _estado('POLYGON').event('RET', 'PRESS', (0, 0)) == 'IGNORE'
+# escape y clic derecho cancelan siempre
+for tipo in ('ESC', 'RIGHTMOUSE'):
+    assert _estado().event(tipo, 'PRESS', (0, 0)) == 'CANCEL', f"{tipo} debía cancelar"
+
+# el preview del lazo no pasa por el RDP (se redibuja en cada frame)
+st = _estado('LASSO')
+st.event('LEFTMOUSE', 'PRESS', (0, 0))
+for i in range(200):
+    st.event('MOUSEMOVE', 'PRESS', (i, i))
+assert len(st.preview()) == 201, "el preview del lazo debe ser el trazo crudo"
+assert len(st.contour()) < 201, "el contorno final sí debe simplificarse"
+
+# reset deja la herramienta lista para el corte siguiente
+st.reset()
+assert st.anclas == [] and not st.armado, "reset no dejó la herramienta limpia"
 
 # --- pestaña SiroLab: registrada aparte, sin tocar el toolbar principal ---
 assert hasattr(bpy.types, "SIRO_PT_lab"), "el panel de SiroLab no quedó registrado"
