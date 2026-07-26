@@ -110,13 +110,22 @@ La pieza activa (la última que clickeaste) es la que recibe el resultado"""
             _make_single_user(tool)
             _apply_pending_modifiers(context, tool)
 
+        # La comprobación va ANTES de tocar nada, igual que en el relleno: con
+        # una malla abierta el boolean no tiene "adentro" que respetar y deja la
+        # pieza peor de lo que estaba (medido: no-manifold de 0 a 12). Antes se
+        # hacía igual y solo se conservaban los operandos, con un mensaje —
+        # "piezas conservadas"— que se leía como "no hice nada".
         abiertas = [o.name for o in (target, *tools) if _open_edge_count(o)]
-        # con entradas cerradas, MANIFOLD garantiza salida manifold; con alguna
-        # abierta produce un no-op silencioso, así que ahí se respeta lo elegido
-        solver = 'MANIFOLD' if self.solver == 'EXACT' and not abiertas else self.solver
-        # con mallas abiertas el resultado no es confiable: no se borra nada,
-        # que es justo lo que hacía desaparecer piezas sin resultado a cambio
-        borrar = self.delete_operands and not abiertas
+        if abiertas:
+            self.report(
+                {'ERROR'},
+                f"Malla abierta o pellizcada en: {', '.join(abiertas)} — no se hizo "
+                "nada para no dañar la pieza. Pasa Reparar malla (o Aplicar relieve) primero.",
+            )
+            return {'CANCELLED'}
+        # con las entradas cerradas, MANIFOLD garantiza salida manifold
+        solver = 'MANIFOLD' if self.solver == 'EXACT' else self.solver
+        borrar = self.delete_operands
 
         context.view_layer.objects.active = target
         hechas, sin_efecto = [], []
@@ -144,15 +153,20 @@ La pieza activa (la última que clickeaste) es la que recibe el resultado"""
                 if not data.users:
                     bpy.data.meshes.remove(data)
 
+        # si el grupo se quedó sin las otras piezas, la clave sobra: si no, el
+        # resultado sigue "agrupado" con piezas que ya no existen
+        from .group import GROUP_KEY
+        gid = target.get(GROUP_KEY)
+        if gid is not None and not any(
+            o is not target and o.get(GROUP_KEY) == gid for o in bpy.data.objects
+        ):
+            del target[GROUP_KEY]
+
         verbo = "fusionadas con" if self.operation == 'UNION' else "restadas de"
         msg = f"{len(hechas)} piezas {verbo} {target.name}"
         nivel = 'INFO'
         if sin_efecto:
             nivel = 'WARNING'
             msg += f" · sin efecto (conservadas): {', '.join(sin_efecto)}"
-        if abiertas:
-            nivel = 'WARNING'
-            msg += (f" · malla abierta: {', '.join(abiertas)} — piezas conservadas,"
-                    " pasa Reparar malla (o Aplicar relieve) primero")
         self.report({nivel}, msg)
         return {'FINISHED'}

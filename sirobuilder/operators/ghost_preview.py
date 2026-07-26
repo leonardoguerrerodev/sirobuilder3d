@@ -19,6 +19,7 @@ addon deshabilitado, el modificador queda ahí pero sin efecto hasta reactivarlo
 """
 
 import bpy
+from bpy.app.handlers import persistent
 from mathutils import Vector
 
 NODEGROUP_NAME = "SiroGhostPreview"
@@ -60,12 +61,34 @@ def _plane_component(kind, axis):
     return (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()[axis]
 
 
+@persistent
+def _reponer_driver(_archivo):
+    """Blender VACÍA `driver_namespace` cada vez que carga un .blend.
+
+    Inyectarla solo en register() no alcanza: register() corre una vez al
+    arrancar, y en cuanto se abre un archivo la función desaparece aunque el
+    addon siga perfectamente habilitado. Los seis drivers del fantasma quedan
+    `is_valid: False`, los sockets del modificador se quedan en cero, y con la
+    normal del plano en (0,0,0) el producto punto da 0 — que no es `< 0`, así
+    que ninguna cara se marca y el fantasma no aparece. Medido en la sesión de
+    Leo con una pieza real: 0 caras fantasma de 250 185.
+
+    Tiene que ser `@persistent`, o el propio handler se borraría en la primera
+    carga y solo arreglaría el primer archivo.
+    """
+    bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
+
+
 def register_driver_function():
     bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
+    if _reponer_driver not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_reponer_driver)
 
 
 def unregister_driver_function():
     bpy.app.driver_namespace.pop(_DRIVER_NS_KEY, None)
+    if _reponer_driver in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_reponer_driver)
 
 
 def _ghost_material():

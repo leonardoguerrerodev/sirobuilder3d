@@ -24,7 +24,12 @@ import bpy
 from mathutils import Vector
 from mathutils.geometry import tessellate_polygon
 
-from .boolean_ops import _apply_bool, _apply_pending_modifiers, _make_single_user
+from .boolean_ops import (
+    _apply_bool,
+    _apply_pending_modifiers,
+    _make_single_user,
+    _open_edge_count,
+)
 
 CUTTER_NAME = "SiroCortador"
 
@@ -218,7 +223,7 @@ def _discard(obj):
         bpy.data.meshes.remove(data)
 
 
-def apply_shape_cut(context, target, rays, action='TRIM', keep='IN', solver='FLOAT'):
+def apply_shape_cut(context, target, rays, action='TRIM', keep='IN'):
     """Corta `target` con la forma que describen `rays`.
 
     TRIM deja una sola pieza (`keep`: 'IN' lo que quedó dentro de la forma,
@@ -236,6 +241,15 @@ def apply_shape_cut(context, target, rays, action='TRIM', keep='IN', solver='FLO
     cutter = build_cutter(rays, target)
     if cutter is None:
         return None
+
+    # El solver se elige solo, con el mismo criterio que Fusionar/Restar (ver
+    # boolean_ops): con las dos mallas cerradas MANIFOLD es correcto y además el
+    # más rápido —medido, 8,06 s contra 9,87 s de FLOAT sobre 2 millones de
+    # caras—, y con la pieza abierta es un no-op silencioso, así que ahí va
+    # EXACT. FLOAT ya no se ofrece: sobre geometría coincidente —una esfera con
+    # la forma centrada, el eje pasando por sus polos— devolvía la pieza en
+    # volumen 0, y no era más rápido que MANIFOLD en ningún tamaño medido.
+    solver = 'EXACT' if _open_edge_count(target) else 'MANIFOLD'
     try:
         if action == 'SPLIT':
             otra = target.copy()
@@ -391,14 +405,6 @@ Escape o clic derecho cancela sin tocar la pieza"""
         ),
         default='OUT',
     )
-    solver: bpy.props.EnumProperty(
-        name="Calidad",
-        items=(
-            ('FLOAT', "Rápida", "Solver liviano — el indicado para mallas densas como los relieves"),
-            ('EXACT', "Exacta", "Más lento; úsalo solo si el corte rápido deja artefactos"),
-        ),
-        default='FLOAT',
-    )
 
     @classmethod
     def poll(cls, context):
@@ -482,9 +488,7 @@ Escape o clic derecho cancela sin tocar la pieza"""
             for p in puntos
         ]
         try:
-            resultado = apply_shape_cut(
-                context, target, rays, self.action, self.keep, self.solver
-            )
+            resultado = apply_shape_cut(context, target, rays, self.action, self.keep)
         except RuntimeError as err:
             self.report({'ERROR'}, f"No se pudo cortar: {err}")
             return

@@ -196,6 +196,11 @@ def _group_cut_loops(cut_edges, plane_co, plane_no):
     return grouped_edges
 
 
+def _en_el_plano(edge, plane_co, plane_no, tol=1e-4):
+    """Los dos extremos de la arista caen sobre el plano de corte"""
+    return all(abs((v.co - plane_co).dot(plane_no)) < tol for v in edge.verts)
+
+
 def _cut_mesh(me, plane_co, plane_no, max_hole_sides):
     """Corta la malla in place conservando el lado hacia plane_no; tapa y sella.
     Devuelve False (sin tocar la malla) si el corte la dejaría vacía."""
@@ -213,7 +218,17 @@ def _cut_mesh(me, plane_co, plane_no, max_hole_sides):
     if not bm.verts:
         bm.free()
         return False
-    cut_edges = [e for e in result['geom_cut'] if isinstance(e, bmesh.types.BMEdge)]
+    # Lo que hay que tapar es lo que quedó ABIERTO sobre el plano, no lo que
+    # devuelve `geom_cut`. Cuando el plano cae sobre vértices que ya existían
+    # —el ecuador de una esfera, el medio de un toro: la posición por defecto
+    # del plano en cualquier pieza simétrica— bisect_plane devuelve en
+    # `geom_cut` aristas que **ya tienen dos caras**, y el agujero real de la
+    # malla son otras. Tapar `geom_cut` a ciegas hacía el doble daño, medido
+    # sobre una esfera de 32 segmentos: creaba caras encima de las que ya
+    # estaban (32 aristas con 3 caras) y dejaba el agujero sin tapar (32 de
+    # borde). En un corte normal las dos listas coinciden, así que esto no
+    # cambia nada ahí.
+    cut_edges = [e for e in bm.edges if e.is_boundary and _en_el_plano(e, plane_co, plane_no)]
     if cut_edges:
         # tapa por grupos de contornos anidados: respeta huecos (agujero de un
         # toro) y no puentea piezas separadas con una cara falsa entre ellas
@@ -222,6 +237,18 @@ def _cut_mesh(me, plane_co, plane_no, max_hole_sides):
                 bmesh.ops.triangle_fill(bm, edges=group_edges, normal=plane_no)
     if max_hole_sides:
         bmesh.ops.holes_fill(bm, edges=bm.edges[:], sides=max_hole_sides)
+    # Cortar sobre vértices que ya existían deja caras de área cero (32 en una
+    # esfera partida por el ecuador, 96 en un toro por el medio): el anillo que
+    # ya estaba en el plano colapsa.
+    #
+    # Solo las aristas DEL PLANO, nunca toda la malla: disolver en toda la
+    # malla abre las piezas que ya traían caras de área cero de antes —las que
+    # deja el boolean del relleno—, y ahí no cose, borra. Medido sobre una
+    # esfera rellenada y cortada: en toda la malla daba 21 aristas de borde y 60
+    # no-manifold; acotado al plano, 0 y 0.
+    del_plano = [e for e in bm.edges if _en_el_plano(e, plane_co, plane_no)]
+    if del_plano:
+        bmesh.ops.dissolve_degenerate(bm, dist=1e-6, edges=del_plano)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.to_mesh(me)
     bm.free()
@@ -313,9 +340,31 @@ class SIRO_OT_cancel_cut(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        # Quién recupera el foco, resuelto ANTES de borrar el plano: el nombre
+        # guardado es solo una pista (la pieza pudo renombrarse), igual que en
+        # SIRO_OT_cut.
+        cutter = get_cutter(context)
+        target = None
+        if cutter is not None:
+            target = context.scene.objects.get(cutter.get("siro_target", ""))
+        if target is None:
+            target = ghost_preview.ghost_target()
+
         remove_preview(context)
         for name in (CUTTER_NAME,):
             obj = context.scene.objects.get(name)
             if obj is not None:
                 bpy.data.objects.remove(obj, do_unlink=True)
+
+        # El plano nacía activo y como ÚNICO objeto seleccionado (ver
+        # add_cut_plane), así que borrarlo sin más dejaba la escena sin activo y
+        # sin selección. Y sin selección el gizmo se dibuja —lo posiciona el
+        # objeto activo— pero no mueve nada, porque transform.translate opera
+        # sobre lo seleccionado: los ejes aparecen y arrastrarlos no hace nada.
+        # Cancelar significa "no pasó nada", así que devuelve el foco a la pieza,
+        # igual que ya hacen Cortar y Extrudir hacia abajo.
+        if target is not None and target.name in context.view_layer.objects:
+            bpy.ops.object.select_all(action='DESELECT')
+            target.select_set(True)
+            context.view_layer.objects.active = target
         return {'FINISHED'}

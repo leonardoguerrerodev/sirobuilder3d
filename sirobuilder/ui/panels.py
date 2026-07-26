@@ -8,7 +8,7 @@ pestaña de laboratorio solo tiene sentido mientras la herramienta está en prue
 
 import bpy
 
-from ..operators import camera_nav, cut, extrude_down, select_mark, shape_cut
+from ..operators import camera_nav, cut, depthmap_relief, extrude_down, select_mark, shape_cut
 from . import iconos, overlay
 
 
@@ -46,6 +46,18 @@ def _sin_pieza(layout, verbo):
     _aviso(layout, f"Selecciona una pieza para {verbo}", 'ERROR')
 
 
+# Las que Blender rellena desde el CONTEXTO en el `invoke` del operador (el
+# cursor 3D, la orientación de la vista), no valores del botón. Su "default" no
+# es un valor: es un centinela que significa "todavía no se sabe".
+#
+# `scale` es el caso que rompía: en los operadores de añadir su default es
+# (0,0,0) y quiere decir "sin escala", pero escrito literalmente multiplica la
+# geometría por cero y la primitiva nace **colapsada en un punto** — 64 vértices
+# y 0 mm de lado, invisible. El gizmo quedaba plantado sobre ese objeto de
+# tamaño cero en el origen y parecía que nada se podía mover.
+_PROPS_DE_CONTEXTO = frozenset({"location", "rotation", "scale", "align"})
+
+
 def _boton(layout, idname, **kwargs):
     """`layout.operator` que deja las propiedades en su valor por defecto.
 
@@ -54,10 +66,15 @@ def _boton(layout, idname, **kwargs):
     Leo: bajó el ratio de Simplificar a 1 para probar, y desde ahí el botón
     quedó inservible —"no se pudo reducir"— sin ninguna pista de por qué. Un
     botón grande de una toolbar tiene que hacer siempre lo mismo.
+
+    Lo que NO se toca son las propiedades de contexto (ver `_PROPS_DE_CONTEXTO`):
+    ahí el default es un centinela, no un valor.
     """
     op = layout.operator(idname, **kwargs)
     for prop in op.bl_rna.properties:
         if prop.identifier == "rna_type" or prop.is_readonly:
+            continue
+        if prop.identifier in _PROPS_DE_CONTEXTO:
             continue
         try:
             setattr(op, prop.identifier, prop.default)
@@ -173,12 +190,20 @@ class SIRO_PT_cut(_SiroSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        plano = context.scene.objects.get(cut.CUTTER_NAME)
+        obj = context.active_object
+        # mismo aviso que el resto de las secciones: sin esto los botones quedan
+        # grises sin decir por qué y el panel parece roto
+        if plano is None and (obj is None or obj.type != 'MESH'):
+            _sin_pieza(layout, "cortar")
+            return
+
         col = layout.column(align=True)
         col.scale_y = BOTON
         _boton(col, "siro.add_cut_plane", icon='MESH_PLANE')
         col.operator("siro.cut", icon='UV_EDGESEL')
 
-        if context.scene.objects.get(cut.CUTTER_NAME) is not None:
+        if plano is not None:
             _aviso(layout, "Sólido = se conserva · fantasma = se descarta", 'GHOST_ENABLED')
             col = layout.column()
             col.scale_y = BOTON
@@ -214,13 +239,11 @@ class SIRO_PT_shape_cut(_SiroSection, bpy.types.Panel):
             op.shape = ident
             op.action = scene.siro_action
             op.keep = scene.siro_keep
-            op.solver = scene.siro_solver
 
         col = layout.column()
         col.use_property_split = True
         col.use_property_decorate = False
         col.prop(scene, "siro_keep")
-        col.prop(scene, "siro_solver")
 
         _aviso(layout, "Dibuja sobre el viewport · Esc cancela", 'MOUSE_MOVE')
 
@@ -318,16 +341,32 @@ class SIRO_PT_relief(_SiroSection, bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
+        scene = context.scene
         col = layout.column(align=True)
         col.scale_y = BOTON
         _boton(col, "siro.depthmap_relief", icon='IMPORT')
+        _boton(col, "siro.bake_depthmap", icon='MOD_SHRINKWRAP')
         obj = context.active_object
         if obj is None or obj.type != 'MESH':
             _sin_pieza(layout, "aplicar el relieve")
             return
-        disp = obj.modifiers.get("SiroRelieve")
+        disp = obj.modifiers.get(depthmap_relief.DISP_MOD)
         if disp is None:
             return
+
+        # Preparar va antes que Suavizado/Profundidad: primero se fabrica el
+        # mapa de alturas, después se regula cuánto y con qué suavidad desplaza.
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(scene, "siro_dm_domo")
+        col.prop(scene, "siro_dm_contraste")
+        col.prop(scene, "siro_dm_tolerancia")
+        col.prop(scene, "siro_dm_invertir")
+        col = layout.column()
+        col.scale_y = BOTON
+        _boton(col, "siro.prep_depthmap", icon='IMAGE_ZDEPTH')
+
         col = layout.column()
         col.use_property_split = True
         col.use_property_decorate = False
@@ -369,17 +408,31 @@ def _register_props():
         ),
         default='OUT',
     )
-    Scene.siro_solver = bpy.props.EnumProperty(
-        name="Calidad",
-        items=(
-            ('FLOAT', "Rápida", "Para mallas densas, como los relieves"),
-            ('EXACT', "Exacta", "Más lenta; solo si el corte rápido deja artefactos"),
-        ),
-        default='FLOAT',
+    # "Preparar depthmap": fabricar altura a partir de una imagen a color
+    Scene.siro_dm_domo = bpy.props.FloatProperty(
+        name="Domo",
+        description="Cuánto manda la forma abombada de la silueta y cuánto el detalle de la imagen. 0 = solo detalle, 1 = cabujón liso",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+    )
+    Scene.siro_dm_contraste = bpy.props.FloatProperty(
+        name="Contraste",
+        description="Gamma sobre el detalle: por debajo de 1 levanta las zonas bajas, por encima las hunde",
+        default=1.0, min=0.2, max=5.0,
+    )
+    Scene.siro_dm_tolerancia = bpy.props.FloatProperty(
+        name="Tolerancia de fondo",
+        description="Cuánto se puede parecer un píxel al color de las esquinas para contarlo como fondo. Solo se usa si la imagen no trae alpha",
+        default=0.15, min=0.01, max=1.0, subtype='FACTOR',
+    )
+    Scene.siro_dm_invertir = bpy.props.BoolProperty(
+        name="Invertir",
+        description="Da vuelta la altura: lo que subía baja. El fondo se queda plano igual",
+        default=False,
     )
 
 
 def _unregister_props():
-    for prop in ("siro_action", "siro_base_z", "siro_resolucion", "siro_keep", "siro_solver"):
+    for prop in ("siro_action", "siro_base_z", "siro_resolucion", "siro_keep",
+                 "siro_dm_domo", "siro_dm_contraste", "siro_dm_tolerancia", "siro_dm_invertir"):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)

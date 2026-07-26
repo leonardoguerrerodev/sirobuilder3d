@@ -14,8 +14,12 @@ class SIRO_OT_align_base(bpy.types.Operator):
 
     def execute(self, context):
         for obj in context.selected_objects:
-            if obj.type != 'MESH':
+            if obj.type != 'MESH' or not obj.data.vertices:
                 continue
-            min_z = min((obj.matrix_world @ Vector(c)).z for c in obj.bound_box)
+            # sobre los vértices reales, no sobre `bound_box`: esa caja es LOCAL,
+            # y al rotarla sus esquinas caen más abajo que la malla. Medido: un
+            # toro rotado quedaba apoyado sobre la caja imaginaria, con 4,30 mm
+            # de aire debajo de la pieza.
+            min_z = min((obj.matrix_world @ v.co).z for v in obj.data.vertices)
             obj.location.z -= min_z
         return {'FINISHED'}

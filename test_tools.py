@@ -7,6 +7,7 @@ import time
 
 import bmesh
 import bpy
+from mathutils import Vector
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.resolve()))
 import addon_utils
@@ -131,6 +132,7 @@ assert "SiroRelieve" in relief.modifiers, "falta el modifier Displace"
 assert "SiroResolucion" not in relief.modifiers, "no debía quedar Subsurf en vivo"
 assert len(relief.data.vertices) == 607 * 607, f"malla horneada esperaba 607×607 verts, tiene {len(relief.data.vertices)}"
 
+_n_cara = len(relief.data.vertices)  # la cara de arriba, antes de que Solidify la duplique
 bpy.ops.siro.apply_relief()
 
 assert not relief.modifiers, "aplicar relieve debía consumir los modifiers"
@@ -139,8 +141,104 @@ assert max(zs) - min(zs) > 0.2, f"el relieve no generó altura: rango z = {max(z
 bm = bmesh.new()
 bm.from_mesh(relief.data)
 abiertas = sum(1 for e in bm.edges if not e.is_manifold)
+volumen = bm.calc_volume(signed=True)
 bm.free()
 assert abiertas == 0, f"el relieve aplicado quedó abierto ({abiertas} aristas) — no es fusionable"
+
+# la base tiene que ser una placa plana debajo del relieve. Solidify sola la
+# desplazaba por la normal: sobre una pieza de 5 mm arrastraba la base 2,5 mm de
+# costado, dejaba 0,03 mm de grosor y auto-intersecaba la malla (volumen negativo)
+_arriba = [relief.data.vertices[i].co for i in range(_n_cara)]
+_base = [relief.data.vertices[i].co for i in range(_n_cara, 2 * _n_cara)]
+_lat = max((a.xy - b.xy).length for a, b in zip(_arriba, _base))
+assert _lat < 1e-5, f"la base se arrastró de costado {_lat:.3f} mm en vez de bajar recta"
+_z_base = [v.z for v in _base]
+assert max(_z_base) - min(_z_base) < 1e-5, f"la base no quedó plana: varía {max(_z_base) - min(_z_base):.3f} mm"
+_grosor = min(a.z - b.z for a, b in zip(_arriba, _base))
+assert abs(_grosor - 1.0) < 1e-4, f"el grosor de base pedido era 1.0 mm y quedó en {_grosor:.3f} mm"
+assert volumen > 0, f"la malla quedó auto-intersecada: volumen con signo {volumen:.3f}"
+
+# --- preparar depthmap: de imagen a color a silueta abombada ---
+import numpy as np
+
+from sirobuilder.operators import depthmap_relief as dm
+
+N = 96
+_yy, _xx = np.mgrid[0:N, 0:N]
+disco = ((_xx - N / 2) ** 2 + (_yy - N / 2) ** 2) < (N * 0.35) ** 2
+px = np.zeros((N, N, 4), np.float32)
+px[..., :3] = (0.8, 0.8, 0.2)   # fondo plano
+px[disco, :3] = (0.1, 0.2, 0.9)  # pieza
+px[..., 3] = 1.0                 # sin alpha útil: tiene que adivinar por el color
+
+alto, hubo_alpha = dm.calcular_depth(px, domo=1.0)
+assert not hubo_alpha, "sin alpha, calcular_depth debía avisar que adivinó la silueta"
+assert alto[0, 0] == 0.0 and alto[-1, -1] == 0.0, f"el fondo debía quedar plano en 0, dio {alto[0, 0]}"
+_centro = float(alto[N // 2, N // 2])
+_borde = float(alto[N // 2, int(N / 2 - N * 0.30)])
+assert _centro > _borde > 0.0, f"el domo no sube hacia adentro: centro {_centro}, borde {_borde}"
+
+alto_inv, _ = dm.calcular_depth(px, domo=1.0, invertir=True)
+assert abs(float(alto_inv[N // 2, N // 2]) - (1.0 - _centro)) < 1e-6, "invertir no dio vuelta la altura"
+assert alto_inv[0, 0] == 0.0, "invertir levantó el fondo: tiene que quedar plano igual"
+
+px_alpha = px.copy()
+px_alpha[..., 3] = disco.astype(np.float32)
+_, hubo_alpha = dm.calcular_depth(px_alpha, domo=1.0)
+assert hubo_alpha, "con alpha en la imagen, la silueta no se adivina: se usa el alpha"
+
+# el depthmap no puede salir más grande que lo que el grid del relieve puede consumir
+grande = np.zeros((1600, 1600, 4), np.float32)
+grande[..., 3] = 1.0
+_yy, _xx = np.mgrid[0:1600, 0:1600]
+grande[((_xx - 800) ** 2 + (_yy - 800) ** 2) < 80 ** 2, :3] = 1.0
+alto_g, _ = dm.calcular_depth(grande, domo=1.0)
+assert max(alto_g.shape) <= dm.RES_DEPTH, f"el depthmap no se submuestreó: {alto_g.shape}"
+
+# el operador completo, contra un relieve vivo
+color = bpy.data.images.new("prep_test", N, N)
+color.pixels.foreach_set(px.ravel())
+rel = dm.crear_relieve(bpy.context, color)
+bpy.context.view_layer.objects.active = rel
+bpy.ops.siro.prep_depthmap()
+
+gen = rel.modifiers[dm.DISP_MOD].texture.image
+assert gen.colorspace_settings.name == 'Non-Color', \
+    f"el depthmap generado quedó en {gen.colorspace_settings.name}: lo desplazaría con una gamma de más"
+assert gen.get("siro_source") == "prep_test", "el generado no recuerda de qué imagen salió"
+a1 = np.empty(gen.size[0] * gen.size[1] * 4, np.float32)
+gen.pixels.foreach_get(a1)
+
+bpy.ops.siro.prep_depthmap()  # de nuevo: debe partir del original, no del generado
+a2 = np.empty(gen.size[0] * gen.size[1] * 4, np.float32)
+rel.modifiers[dm.DISP_MOD].texture.image.pixels.foreach_get(a2)
+assert np.array_equal(a1, a2), "preparar dos veces compuso el efecto: se perdió siro_source"
+
+# --- relieve desde pieza 3D: profundidad real medida sobre la malla ---
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_uv_sphere_add(radius=15.0, location=(400, 0, 0))
+esfera = bpy.context.active_object
+bpy.ops.siro.bake_depthmap()
+
+depth = bpy.data.images[f"{esfera.name}_depth"]
+assert depth.colorspace_settings.name == 'Non-Color', "el bake tiene que salir Non-Color"
+buf = np.empty(dm.RES_DEPTH * dm.RES_DEPTH * 4, np.float32)
+depth.pixels.foreach_get(buf)
+zmap = buf.reshape(dm.RES_DEPTH, dm.RES_DEPTH, 4)[..., 0]
+assert zmap[0, 0] == 0.0 and zmap[-1, -1] == 0.0, "las esquinas no tocan la esfera: deben quedar de fondo"
+_c = dm.RES_DEPTH // 2
+assert zmap[_c, _c] > 0.99, f"el polo de la esfera debía ser el máximo, dio {zmap[_c, _c]}"
+
+rel3d = bpy.context.active_object
+assert dm.DISP_MOD in rel3d.modifiers, "el bake debía dejar el relieve armado"
+# el rango 0–1 son 15 mm: la media esfera vista desde arriba va de 0 en el borde al polo
+assert abs(rel3d.modifiers[dm.DISP_MOD].strength - 15.0) < 0.5, \
+    f"la profundidad no quedó a escala real: {rel3d.modifiers[dm.DISP_MOD].strength} mm, esperaba 15"
+assert abs(rel3d.dimensions.x - 31.5) < 0.5, \
+    f"el relieve no salió del ancho de la pieza: {rel3d.dimensions.x} mm, esperaba 31,5"
+
+for op in ("SIRO_OT_prep_depthmap", "SIRO_OT_bake_depthmap"):
+    assert hasattr(bpy.types, op), f"{op} no quedó registrado"
 
 # --- espejo: refleja la pieza en su lugar, sin duplicarla ---
 def _volume(obj):
@@ -176,22 +274,66 @@ assert not any(abs(x + 0.2) < 1e-5 for x in xs), "la muesca sigue en -X"
 assert (mcube.dimensions - dims_before).length < 1e-5, "el espejo movió/deformó la pieza"
 assert _volume(mcube) > 0, f"el espejo dejó las normales invertidas (volumen {_volume(mcube)})"
 
-# --- modo acople: toggle de snapping cara a cara ---
+# el eje es el de MUNDO, el que muestra el gizmo y del que los botones toman su
+# color: con la pieza rotada, reflejar sobre el eje local usaba otro plano
+bpy.ops.mesh.primitive_cube_add(size=2, location=(50, 0, 0))
+mrot = bpy.context.active_object
+mrot.data.vertices[0].co.x -= 0.4          # una marca asimétrica
+mrot.rotation_euler = (0.0, 0.0, 0.785398)  # 45° en Z
+bpy.context.view_layer.update()
+_centro_w = mrot.matrix_world @ (sum((Vector(c) for c in mrot.bound_box), Vector()) / 8)
+_antes_w = [mrot.matrix_world @ v.co for v in mrot.data.vertices]
+bpy.ops.siro.mirror(axis='X')
+bpy.context.view_layer.update()
+_despues_w = sorted((round(p.x, 4), round(p.y, 4), round(p.z, 4))
+                    for p in (mrot.matrix_world @ v.co for v in mrot.data.vertices))
+_esperado_global = sorted((round(2 * _centro_w.x - p.x, 4), round(p.y, 4), round(p.z, 4))
+                          for p in _antes_w)
+assert _despues_w == _esperado_global, \
+    "el espejo no usó el eje X global (el que muestra el gizmo y el color del botón)"
+
+# --- modo acople: enciende, y al apagar DEVUELVE lo que el usuario tenía ---
 ts = bpy.context.scene.tool_settings
+ts.use_snap = True
+ts.snap_elements = {'VERTEX'}
+ts.use_snap_align_rotation = False
+_previo = (ts.use_snap, set(ts.snap_elements), ts.use_snap_align_rotation)
 bpy.ops.siro.snap_dock()
 assert ts.use_snap and ts.snap_elements == {'FACE'} and ts.use_snap_align_rotation, "acople no se activó"
 bpy.ops.siro.snap_dock()
-assert not ts.use_snap, "acople no se desactivó"
+# apagar no es imponer valores fijos: antes te dejaba el snap apagado y en
+# 'INCREMENT' aunque hubieras estado trabajando con snap a vértices
+assert (ts.use_snap, set(ts.snap_elements), ts.use_snap_align_rotation) == _previo, \
+    f"acople no devolvió la config del usuario: {_previo} → {(ts.use_snap, set(ts.snap_elements), ts.use_snap_align_rotation)}"
 
-# --- alinear a la base: z mínimo mundial queda en 0 ---
-from mathutils import Vector
+# --- marcar selección: al apagar devuelve el color que tenía cada pieza ---
+bpy.ops.mesh.primitive_cube_add(size=2, location=(60, 0, 0))
+_pintado = bpy.context.active_object
+_pintado.color = (0.1, 0.9, 0.3, 1.0)
+bpy.ops.siro.select_mark()
+assert tuple(_pintado.color) != (0.1, 0.9, 0.3, 1.0), "el modo no llegó a teñir la pieza"
+bpy.ops.siro.select_mark()
+assert max(abs(a - b) for a, b in zip(_pintado.color, (0.1, 0.9, 0.3, 1.0))) < 1e-4, \
+    f"marcar selección borró el color del usuario: quedó en {tuple(_pintado.color)}"
 
+# --- alinear a la base: z mínimo mundial queda en 0, también con la pieza rotada ---
 bpy.ops.mesh.primitive_cube_add(size=2, location=(20, 0, 3.7))
 acube = bpy.context.active_object
 bpy.ops.siro.align_base()
 bpy.context.view_layer.update()
 min_z = min((acube.matrix_world @ Vector(c)).z for c in acube.bound_box)
 assert abs(min_z) < 1e-5, f"alinear a la base dejó z mínimo en {min_z}"
+
+# rotada: `bound_box` es la caja LOCAL y al rotarla cae más abajo que la malla,
+# así que medir sobre ella dejaba la pieza flotando (4,30 mm en un toro rotado)
+bpy.ops.mesh.primitive_torus_add(major_radius=10, minor_radius=3, location=(40, 0, 12))
+arot = bpy.context.active_object
+arot.rotation_euler = (0.7, 0.3, 0.0)
+bpy.context.view_layer.update()
+bpy.ops.siro.align_base()
+bpy.context.view_layer.update()
+min_z_rot = min((arot.matrix_world @ v.co).z for v in arot.data.vertices)
+assert abs(min_z_rot) < 1e-4, f"pieza rotada quedó flotando: z mínimo real {min_z_rot}"
 
 # --- restar y fusionar (booleans de 3D Builder) ---
 def _two_cubes(x):
@@ -271,10 +413,24 @@ op_a.select_set(True)
 op_b.select_set(True)
 bpy.context.view_layer.objects.active = op_a
 
-bpy.ops.siro.boolean(operation='UNION')
+_verts_a = len(op_a.data.vertices)
+_bm = bmesh.new(); _bm.from_mesh(op_a.data)
+_nm_a = sum(1 for e in _bm.edges if not e.is_manifold); _bm.free()
+
+try:
+    bpy.ops.siro.boolean(operation='UNION')
+    raise AssertionError("con una malla abierta el boolean debía cancelarse, no seguir")
+except RuntimeError as err:
+    assert "Malla abierta" in str(err), f"el aviso no explica el problema: {err}"
 bpy.context.view_layer.update()
 
 assert op_b_name in bpy.data.objects, "la pieza de malla abierta no debía desaparecer"
+# y el target tampoco se toca: antes se le aplicaba el boolean igual y quedaba
+# peor que antes (no-manifold de 0 a 12) mientras el aviso decía "conservadas"
+_bm = bmesh.new(); _bm.from_mesh(op_a.data)
+_nm_despues = sum(1 for e in _bm.edges if not e.is_manifold); _bm.free()
+assert len(op_a.data.vertices) == _verts_a and _nm_despues == _nm_a, \
+    f"la pieza activa se modificó: verts {_verts_a}→{len(op_a.data.vertices)}, no-manifold {_nm_a}→{_nm_despues}"
 
 # --- fusionar con un relieve vivo en el target: el relieve entra en el resultado ---
 bpy.ops.mesh.primitive_cube_add(size=2, location=(140, 0, 0))
@@ -361,11 +517,37 @@ assert gp.MODIFIER_NAME not in sph.modifiers, "el preview debía limpiarse tras 
 from sirobuilder.operators import extrude_down, shape_cut
 from sirobuilder.ui import panels as P
 
+# Por el camino REAL del panel: `_boton` resetea las propiedades del operador
+# antes de aplicar las del addon. Llamar al operador con solo `**props` —como
+# hacía este test— esquivaba justo el bug: `_boton` también pisaba `scale`, cuyo
+# default (0,0,0) es un centinela que significa "sin escala", y la primitiva
+# nacía colapsada en un punto (64 vértices, 0 mm de lado, invisible).
 for idname, texto, icono, props in P.PRIMITIVAS:
     modulo, op = idname.split(".")
-    getattr(getattr(bpy.ops, modulo), op)(location=(200, 0, 0), **props)
+    operador = getattr(getattr(bpy.ops, modulo), op)
+    reseteadas = {
+        p.identifier: p.default
+        for p in operador.get_rna_type().properties
+        if p.identifier != "rna_type" and not p.is_readonly
+        and p.identifier not in P._PROPS_DE_CONTEXTO
+    }
+    operador(location=(200, 0, 0), **{**reseteadas, **props})
     d = bpy.context.active_object.dimensions
     assert 28 <= max(d) <= 33, f"{texto} sale de {max(d):.1f} mm, se esperaba ~30"
+
+# y las de contexto no se tocan nunca. Esto es lo que pasa si `scale` vuelve a
+# entrar: `_boton` hace setattr(op, "scale", prop.default) y el default de un
+# array es un escalar, así que Blender lo expande a (0,0,0) — "sin escala" como
+# centinela, pero escrito literalmente multiplica la geometría por cero.
+assert "scale" in P._PROPS_DE_CONTEXTO, \
+    "`scale` tiene que quedar fuera de _boton: su default (0,0,0) colapsa la primitiva"
+
+bpy.ops.mesh.primitive_cube_add(size=30.0, location=(240, 0, 0), scale=(0.0, 0.0, 0.0))
+_colapsado = bpy.context.active_object
+assert max(_colapsado.dimensions) < 1e-6 and len(_colapsado.data.vertices) == 8, \
+    ("el centinela cambió de comportamiento: scale=(0,0,0) ya no colapsa la primitiva "
+     f"(mide {max(_colapsado.dimensions)}) — revisar si _PROPS_DE_CONTEXTO sigue haciendo falta")
+bpy.data.objects.remove(_colapsado, do_unlink=True)
 
 iconos = bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_items.keys()
 
@@ -532,6 +714,28 @@ assert not rv.modifiers, "el relieve pendiente debía hornearse antes del corte"
 assert abs(rv.dimensions.z - 4.3094) < 0.02, \
     f"el corte perdió el relieve: alto {rv.dimensions.z}, esperaba 4.31"
 
+# --- esfera con la forma CENTRADA: el eje del corte pasa por los polos ---
+# Con el solver FLOAT esto devolvía la pieza en volumen 0 y 12 vértices, y en
+# Exterior la dejaba con 6 aristas no-manifold sin que se notara. Un cubo nunca
+# lo disparaba: por eso hace falta la esfera acá.
+_centrado = [(-4, -4), (4, -4), (4, 4), (-4, 4)]
+_partes = {}
+for _keep in ('IN', 'OUT'):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=8.0, segments=32, ring_count=16,
+                                         location=(300, 0, 0))
+    _esf = bpy.context.active_object
+    _rays = [(o + Vector((300, 0, 0)), d) for o, d in _ortho_rays(_centrado, z=60.0)]
+    shape_cut.apply_shape_cut(bpy.context, _esf, _rays, action='TRIM', keep=_keep)
+    _abiertas, _vol = _cerrado(_esf)
+    assert _abiertas == 0, f"esfera centrada ({_keep}): quedó con {_abiertas} aristas no-manifold"
+    assert _vol > 1.0, f"esfera centrada ({_keep}): la pieza se destruyó (volumen {_vol})"
+    _partes[_keep] = _vol
+    bpy.data.objects.remove(_esf, do_unlink=True)
+# las dos mitades tienen que sumar la esfera entera: 4/3·π·8³ ≈ 2144, y la malla
+# de 32 segmentos da 2110,4
+assert abs(_partes['IN'] + _partes['OUT'] - 2110.4) < 2.0, \
+    f"Interior + Exterior = {_partes['IN'] + _partes['OUT']:.1f}, esperaba la esfera entera (2110.4)"
+
 # --- modos de forma: contornos 2D cerrados y coherentes ---
 import math as _math
 
@@ -630,7 +834,7 @@ assert st.anclas == [] and not st.armado, "reset no dejó la herramienta limpia"
 assert hasattr(bpy.types, "SIRO_OT_shape_cut"), "el operador de corte por forma no quedó registrado"
 for ident, nombre, desc, icono in shape_cut.SHAPES:
     assert icono in iconos, f"forma {ident}: ícono inválido '{icono}'"
-for prop in ("siro_action", "siro_base_z", "siro_keep", "siro_solver"):
+for prop in ("siro_action", "siro_base_z", "siro_keep"):
     assert hasattr(bpy.context.scene, prop), f"falta la propiedad de escena {prop}"
 
 # Cada forma tiene que ARRANCAR la herramienta, no solo elegirla: cuando las
@@ -844,6 +1048,36 @@ bpy.ops.siro.repair()
 assert _pinched_edges(p1) == 0, f"reparar dejó {_pinched_edges(p1)} aristas pellizcadas"
 assert _mesh_stats(p1)[1] == 0, f"reparar dejó la malla no-manifold: {_mesh_stats(p1)}"
 
+# --- reparar no puede dejar la pieza PEOR de lo que llegó ---
+# Una pieza rellenada está cerrada pero llena de caras de área cero (las deja el
+# boolean de unión). El soldado y la disolución, sobre eso, borran caras y abren
+# la superficie: medido, una esfera rellenada sana salía con 3064 aristas de
+# borde donde no había ninguna, tras 23,5 s de trabajo.
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.mesh.primitive_uv_sphere_add(radius=8.0, segments=32, ring_count=16, location=(800, 0, 12))
+_rell = bpy.context.active_object
+bpy.context.view_layer.objects.active = _rell
+assert extrude_down.extrude_down(bpy.context, _rell, 20.0, 0.0, 256), "el test necesita la pieza rellenada"
+_bm = bmesh.new(); _bm.from_mesh(_rell.data)
+_degeneradas = sum(1 for f in _bm.faces if f.calc_area() < 1e-9)
+_vol_antes = _bm.calc_volume(signed=True)
+_bm.free()
+assert _degeneradas > 0, "el test necesita las caras de área cero que deja el relleno"
+assert _mesh_stats(_rell)[1] == 0, "la pieza rellenada tenía que llegar sana"
+
+bpy.ops.object.select_all(action='DESELECT')
+_rell.select_set(True)
+bpy.context.view_layer.objects.active = _rell
+bpy.ops.siro.repair()
+
+_bm = bmesh.new(); _bm.from_mesh(_rell.data)
+_vol_despues = _bm.calc_volume(signed=True)
+_bm.free()
+assert _mesh_stats(_rell)[1] == 0, \
+    f"reparar rompió una pieza que llegó sana: {_mesh_stats(_rell)[1]} aristas no-manifold"
+assert abs(_vol_despues - _vol_antes) < 1e-4, \
+    f"reparar cambió una pieza que no necesitaba reparación: {_vol_antes:.1f} → {_vol_despues:.1f}"
+
 # el corte por forma empuja su propio paso de deshacer: sin esto, Ctrl+Z se
 # come el paso anterior en vez del corte (no se puede probar headless, el undo
 # global está apagado en background)
@@ -853,7 +1087,8 @@ assert "ed.undo_push" in pathlib.Path(shape_cut.__file__).read_text(), \
 # Los botones de la toolbar no pueden heredar las propiedades de la última
 # corrida: Leo bajó el ratio de Simplificar a 1 en el panel de rehacer y el
 # botón quedó inservible sin ninguna pista. _boton las resetea a su default.
-for idname in ("siro.simplify", "siro.repair", "siro.boolean", "siro.mirror", "siro.align_base"):
+for idname in ("siro.simplify", "siro.repair", "siro.boolean", "siro.mirror", "siro.align_base",
+               "siro.prep_depthmap", "siro.bake_depthmap"):
     assert f'"{idname}"' in fuente_lab, f"{idname} debería estar en el panel"
     assert f'.operator("{idname}"' not in fuente_lab, \
         f"{idname} se dibuja con layout.operator: heredaría las props de la última vez"

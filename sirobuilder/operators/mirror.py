@@ -26,16 +26,24 @@ class SIRO_OT_mirror(bpy.types.Operator):
         obj = context.active_object
         _make_single_user(obj)
 
-        # reflejar alrededor del centro del bounding box, no del origen: si el
-        # origen está descentrado la pieza saltaría de lugar al voltearse
-        centro = sum((Vector(c) for c in obj.bound_box), Vector()) / 8
+        # El eje es el de MUNDO, el mismo que muestra el gizmo del viewport y del
+        # que los botones toman su color. Antes se reflejaba sobre el eje local:
+        # con la pieza sin rotar da igual, pero con una pieza rotada 45° el botón
+        # prometía un plano y usaba otro.
+        #
+        # Se refleja alrededor del centro del bounding box, no del origen: si el
+        # origen está descentrado la pieza saltaría de lugar al voltearse.
+        M = obj.matrix_world
+        centro = M @ (sum((Vector(c) for c in obj.bound_box), Vector()) / 8)
         escala = [1.0, 1.0, 1.0]
         escala['XYZ'.index(self.axis)] = -1.0
-        obj.data.transform(
+        reflejo_mundo = (
             Matrix.Translation(centro)
             @ Matrix.Diagonal(escala).to_4x4()
             @ Matrix.Translation(-centro)
         )
+        # la malla vive en local, así que la reflexión de mundo se lleva a local
+        obj.data.transform(M.inverted() @ reflejo_mundo @ M)
 
         # una reflexión invierte el orden de los vértices de cada cara: sin esto
         # la pieza queda del revés (normales hacia adentro, no imprimible)

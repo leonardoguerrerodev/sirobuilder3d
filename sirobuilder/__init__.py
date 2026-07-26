@@ -36,6 +36,8 @@ _classes = (
     snap_dock.SIRO_OT_snap_dock,
     align_base.SIRO_OT_align_base,
     depthmap_relief.SIRO_OT_depthmap_relief,
+    depthmap_relief.SIRO_OT_prep_depthmap,
+    depthmap_relief.SIRO_OT_bake_depthmap,
     depthmap_relief.SIRO_OT_apply_relief,
     overlay.SIRO_OT_toggle_dims,
     panels.SIRO_OT_scene_mm,
