@@ -514,7 +514,7 @@ assert len(sph.data.vertices) != verts_pre, "cortar no encontró la pieza renomb
 assert gp.MODIFIER_NAME not in sph.modifiers, "el preview debía limpiarse tras cortar"
 
 # --- UI: primitivas de ~30 mm, íconos válidos y paneles registrados ---
-from sirobuilder.operators import extrude_down, shape_cut
+from sirobuilder.operators import extrude_down, ring, shape_cut
 from sirobuilder.ui import panels as P
 
 # Por el camino REAL del panel: `_boton` resetea las propiedades del operador
@@ -555,7 +555,7 @@ iconos = bpy.types.UILayout.bl_rna.functions['label'].parameters['icon'].enum_it
 # hay que barrer el fuente entero, no solo los íconos que el test conoce de nombre.
 import re
 
-for modulo in (P, shape_cut, extrude_down):
+for modulo in (P, shape_cut, extrude_down, ring):
     fuente = pathlib.Path(modulo.__file__).read_text()
     # `icon=` cubre botones y etiquetas; los avisos pasan el ícono por posición
     # y se escapaban del barrido — justo el patrón que dejó el panel vacío
@@ -564,7 +564,7 @@ for modulo in (P, shape_cut, extrude_down):
             assert icono in iconos, f"{pathlib.Path(modulo.__file__).name}: ícono inválido '{icono}'"
 # Una sola pestaña y secciones al ras: ni pestaña de laboratorio ni panel
 # contenedor que repita el nombre de la pestaña y coma ancho al anidar.
-secciones = (P.SIRO_PT_main, P.SIRO_PT_add, P.SIRO_PT_transform, P.SIRO_PT_cut,
+secciones = (P.SIRO_PT_main, P.SIRO_PT_add, P.SIRO_PT_ring, P.SIRO_PT_transform, P.SIRO_PT_cut,
              P.SIRO_PT_shape_cut, P.SIRO_PT_extrude, P.SIRO_PT_mesh,
              P.SIRO_PT_place, P.SIRO_PT_relief)
 for cls in secciones:
@@ -573,6 +573,159 @@ for cls in secciones:
     assert not getattr(cls, "bl_parent_id", ""), f"{cls.__name__} volvió a anidarse en otro panel"
     assert cls.bl_icon in iconos, f"{cls.__name__}: ícono inválido '{cls.bl_icon}'"
 assert len({c.bl_icon for c in secciones}) == len(secciones), "dos secciones comparten ícono"
+
+# --- anillo por talla: la medida es el producto, no un detalle ---
+from sirobuilder.operators import boolean_ops as _bo
+from sirobuilder.operators import simplify as _si
+
+# La tabla es una copia de la calculadora del dashboard
+# (!Dashboard/src/components/PreciosCalculadora.tsx). Si alguien la "arregla"
+# acá sin tocar allá, los anillos salen de otra talla y nadie se entera.
+assert len(ring.TALLAS) == 36, f"la tabla de tallas quedó con {len(ring.TALLAS)} entradas"
+assert ring.DIAMETRO['1'] == 13.0 and ring.DIAMETRO['14'] == 17.2 and ring.DIAMETRO['36'] == 24.2, \
+    "la tabla de tallas no coincide con la del dashboard"
+
+_TOPS = ('RECTANGULO', 'OVALO', 'HEXAGONO', 'CORAZON', 'ESCUDO')
+_PERFILES = ('PLANO', 'MEDIA_CANA', 'CONFORT', 'BISELADO')
+
+
+def _anillo(**props):
+    bpy.ops.siro.ring_add()
+    o = bpy.context.active_object
+    for k, v in props.items():
+        setattr(o.siro_ring, k, v)
+    return o
+
+
+def _medidas(o):
+    vs = [v.co for v in o.data.vertices]
+    zmax = max(v.z for v in vs)
+    tapa = [v for v in vs if zmax - v.z < 1e-4]
+    return {
+        "di": 2 * min(math.hypot(v.x, v.z) for v in vs),
+        "zmax": zmax,
+        "planitud": max(abs(v.z - zmax) for v in tapa),
+        "largo": max(v.x for v in tapa) - min(v.x for v in tapa),
+        "ancho": max(v.y for v in tapa) - min(v.y for v in tapa),
+    }
+
+
+def _silueta(o, hasta=75):
+    """Máximo |x| por sector de 5°, desde el tope hacia el costado"""
+    mx = {}
+    for v in o.data.vertices:
+        k = int(math.degrees(abs(math.atan2(v.co.x, v.co.z))) // 5)
+        mx[k] = max(mx.get(k, 0.0), abs(v.co.x))
+    return [mx[k] for k in sorted(mx) if k * 5 <= hasta]
+
+
+# El anillo tiene que salir cerrado y con volumen positivo en TODAS las
+# combinaciones: una malla abierta no se funde y una de volumen negativo está
+# tan auto-intersecada que ningún boolean posterior la digiere.
+for _top in _TOPS + ('NINGUNO',):
+    for _perfil in _PERFILES:
+        o = _anillo(top=_top, perfil=_perfil)
+        caso = f"{_top}/{_perfil}"
+        assert _bo._open_edge_count(o) == 0, f"{caso}: el anillo salió abierto"
+        assert _si._volumen(o) > 0, f"{caso}: volumen no positivo ({_si._volumen(o):.1f})"
+        m = _medidas(o)
+        # El ∅ se mide sobre los vértices reales, no sobre `dimensions`: el bbox
+        # no sabe dónde está el agujero (es el error que ya cometió align_base).
+        assert abs(m["di"] - 17.2) < 0.05, f"{caso}: ∅ interior {m['di']:.3f}, se esperaba 17.2"
+        if _top != 'NINGUNO':
+            assert m["planitud"] < 1e-4, f"{caso}: la cara del sello no es plana ({m['planitud']:.1e})"
+            assert abs(m["largo"] - 14.0) < 0.05, f"{caso}: sello de {m['largo']:.2f} mm de largo, se pidieron 14"
+            assert abs(m["ancho"] - 9.0) < 0.05, f"{caso}: sello de {m['ancho']:.2f} mm de ancho, se pidieron 9"
+        bpy.data.objects.remove(o, do_unlink=True)
+
+# Giro: la huella del sello tiene que coincidir con el bbox del contorno rotado.
+# El borde del sello se mete como paso EXACTO del barrido; saltearlo porque hay
+# un paso cerca no alcanza, porque ese vecino puede caer del lado de afuera y
+# entonces la punta no existe (el hexágono a 30° salía 0,7 mm corto).
+for _g in (0, 30, 45, 90):
+    o = _anillo(top='HEXAGONO', giro=math.radians(_g))
+    c = ring.contorno_top('HEXAGONO', o.siro_ring.top_largo, o.siro_ring.top_ancho,
+                          o.siro_ring.redondeo, o.siro_ring.giro)
+    bx = max(q[0] for q in c) - min(q[0] for q in c)
+    by = max(q[1] for q in c) - min(q[1] for q in c)
+    m = _medidas(o)
+    assert _bo._open_edge_count(o) == 0, f"hexágono a {_g}°: salió abierto"
+    # A lo largo del anillo es exacto (el borde es un paso del barrido); a lo
+    # ancho queda a merced de la resolución angular, de ahí la tolerancia mayor.
+    assert abs(m["largo"] - bx) < 0.05, f"hexágono a {_g}°: huella de {m['largo']:.2f} mm, el contorno mide {bx:.2f}"
+    assert abs(m["ancho"] - by) < 0.2, f"hexágono a {_g}°: huella de {m['ancho']:.2f} mm de ancho, el contorno mide {by:.2f}"
+    bpy.data.objects.remove(o, do_unlink=True)
+
+# Refuerzo: engorda ARRIBA y deja el fondo del aro en `grosor`. Que engordara
+# todo el aro por igual fue justamente lo que Leo reportó como mal.
+o = _anillo(top='NINGUNO')
+for _ref in (0.0, 1.0, 2.5):
+    o.siro_ring.refuerzo = _ref
+    vs = [v.co for v in o.data.vertices]
+    arriba = max(math.hypot(v.x, v.z) for v in vs if v.z > 0 and abs(v.x) < 0.5)
+    abajo = max(math.hypot(v.x, v.z) for v in vs if v.z < 0 and abs(v.x) < 0.5)
+    assert abs((arriba - abajo) - _ref) < 0.02, \
+        f"refuerzo {_ref}: el radio de arriba supera al de abajo en {arriba - abajo:.3f} mm"
+    assert abs((abajo - 17.2 / 2) - o.siro_ring.grosor) < 0.02, \
+        f"refuerzo {_ref}: el fondo del aro dejó de medir `grosor` ({abajo - 8.6:.3f} mm)"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# El hombro no puede tener bultos: la silueta exterior tiene que ensancharse sin
+# volver atrás. Interpolar el radio con un smoothstep pasaba todo lo de arriba
+# —cerrada, plana, medidas exactas— y aun así dejaba un bulto y un pellizco a
+# simple vista. Se prueba en los extremos de las tres perillas del hombro: el
+# `masa` estrecho es el que dispara el bulto si el radio vuelve a depender de él.
+# Se mira hasta 75° a propósito: más allá manda el refuerzo, que por diseño hace
+# que el punto más ancho caiga un poco antes del costado.
+for _top in _TOPS:
+    # El máximo de `cintura` se lee de la propiedad para que el test siga
+    # probando el extremo real si alguien lo mueve.
+    _CMAX = ring.SIRO_PG_ring.bl_rna.properties['cintura'].hard_max
+    for _masa, _cint, _g in ((0.0, 0.0, 0), (0.9, 0.0, 0), (0.0, _CMAX, 0),
+                             (0.9, _CMAX, 0), (0.0, _CMAX, 40), (0.9, _CMAX / 2, 90)):
+        o = _anillo(top=_top, masa=_masa, cintura=_cint, giro=math.radians(_g))
+        perfil = _silueta(o)
+        for i in range(1, len(perfil)):
+            assert perfil[i] >= perfil[i - 1] - 0.01, (
+                f"{_top} masa={_masa} cintura={_cint} giro={_g}°: la silueta se mete hacia "
+                f"adentro a los {i * 5}° ({perfil[i - 1]:.3f} → {perfil[i]:.3f} mm): "
+                "eso es un bulto seguido de un pellizco")
+        bpy.data.objects.remove(o, do_unlink=True)
+
+# Corazón: la muesca es una hendidura del borde de atrás, así que cada posición
+# del sello sigue teniendo un solo tramo de material. Girado 90° la muesca queda
+# a lo largo del aro, la huella se parte en dos y el barrido la rellenaría sola:
+# eso NO se arregla, se avisa.
+o = _anillo(top='CORAZON', giro=0.0)
+assert not o.siro_ring.aviso_huella, "el corazón sin girar no debería avisar"
+_c = ring.contorno_top('CORAZON', 14.0, 9.0, 0.0, 0.0)
+_centro = ring._rango_y(_c, 0.0)[1]
+_lado = ring._rango_y(_c, 3.0)[1]
+assert _centro < _lado, f"la muesca del corazón desapareció (centro {_centro:.2f} vs lado {_lado:.2f})"
+o.siro_ring.giro = math.radians(90)
+assert o.siro_ring.aviso_huella, "el corazón girado 90° tiene que avisar que la huella se parte"
+assert _bo._open_edge_count(o) == 0, "aun avisando, la malla tiene que salir cerrada"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# Vivo: cambiar la talla reconstruye la malla en el mismo objeto
+anillo = _anillo(top='NINGUNO')
+assert bpy.context.view_layer.objects.active is anillo and anillo.select_get(), \
+    "ring_add dejó la escena sin el anillo activo y seleccionado: el gizmo se dibuja pero no arrastra"
+anillo.location = (50.0, 0.0, 0.0)
+malla = anillo.data
+anillo.siro_ring.talla = '22'
+assert anillo.data is malla, "cambiar la talla reemplazó el datablock en vez de reescribirlo"
+assert abs(_medidas(anillo)["di"] - 19.7) < 0.05, "cambiar la talla no reconstruyó el anillo"
+assert tuple(anillo.location) == (50.0, 0.0, 0.0), "reconstruir movió la pieza"
+
+# Aplicar congela los parámetros y NO toca la malla
+huella = _bo._mesh_fingerprint(anillo)
+bpy.ops.siro.ring_apply()
+assert not anillo.siro_ring.activo, "ring_apply dejó el anillo vivo"
+assert _bo._mesh_fingerprint(anillo) == huella, "ring_apply modificó la malla"
+anillo.siro_ring.ancho = 7.0
+assert _bo._mesh_fingerprint(anillo) == huella, "un anillo aplicado siguió reconstruyéndose"
+bpy.data.objects.remove(anillo, do_unlink=True)
 
 # el corte por forma reemplazó al corte libre de dos pasos: no pueden convivir
 for viejo in ("SIRO_OT_draw_contour", "SIRO_OT_free_cut"):

@@ -8,7 +8,7 @@ pestaña de laboratorio solo tiene sentido mientras la herramienta está en prue
 
 import bpy
 
-from ..operators import camera_nav, cut, depthmap_relief, extrude_down, select_mark, shape_cut
+from ..operators import camera_nav, cut, depthmap_relief, extrude_down, ring, select_mark, shape_cut
 from . import iconos, overlay
 
 
@@ -164,6 +164,56 @@ class SIRO_PT_add(_SiroSection, bpy.types.Panel):
             op = _boton(grid, idname, text=texto, icon=icono)
             for prop, valor in props.items():
                 setattr(op, prop, valor)
+
+
+class SIRO_PT_ring(_SiroSection, bpy.types.Panel):
+    """El anillo se genera vivo: mientras no se aplique, cada medida lo reconstruye"""
+    bl_label = "Anillo por talla"
+    bl_icon = 'MESH_TORUS'
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        col = layout.column()
+        col.scale_y = BOTON
+        _boton(col, "siro.ring_add", icon='MESH_TORUS')
+
+        obj = context.active_object
+        p = getattr(obj, "siro_ring", None) if obj is not None else None
+        if p is None or not p.activo:
+            _aviso(layout, "Selecciona un anillo vivo para ajustarlo")
+            return
+
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(p, "talla")
+        _aviso(col, f"\u2300 interior {ring.DIAMETRO[p.talla]} mm")
+        col.prop(p, "perfil")
+        col.prop(p, "ancho")
+        col.prop(p, "grosor")
+        col.prop(p, "refuerzo")
+
+        col.separator()
+        col.prop(p, "top")
+        if p.top != 'NINGUNO':
+            col.prop(p, "top_largo")
+            col.prop(p, "top_ancho")
+            col.prop(p, "top_alto")
+            if p.top == 'RECTANGULO':
+                col.prop(p, "redondeo")
+            col.prop(p, "giro")
+            if p.aviso_huella:
+                _aviso(col, "A este giro el sello se parte: la muesca se rellena", 'ERROR')
+            col.separator()
+            col.prop(p, "masa")
+            col.prop(p, "cintura")
+        col.separator()
+        col.prop(p, "segmentos")
+
+        col = layout.column()
+        col.scale_y = BOTON
+        _boton(col, "siro.ring_apply", icon='CHECKMARK')
 
 
 class SIRO_PT_transform(_SiroSection, bpy.types.Panel):
@@ -380,6 +430,9 @@ class SIRO_PT_relief(_SiroSection, bpy.types.Panel):
 
 def _register_props():
     Scene = bpy.types.Scene
+    # Los parámetros del anillo viven en el OBJETO, no en la escena: cada anillo
+    # lleva los suyos y se pueden tener varios vivos a la vez.
+    bpy.types.Object.siro_ring = bpy.props.PointerProperty(type=ring.SIRO_PG_ring)
     Scene.siro_action = bpy.props.EnumProperty(
         name="Acción",
         items=(
@@ -436,3 +489,5 @@ def _unregister_props():
                  "siro_dm_domo", "siro_dm_contraste", "siro_dm_tolerancia", "siro_dm_invertir"):
         if hasattr(bpy.types.Scene, prop):
             delattr(bpy.types.Scene, prop)
+    if hasattr(bpy.types.Object, "siro_ring"):
+        delattr(bpy.types.Object, "siro_ring")

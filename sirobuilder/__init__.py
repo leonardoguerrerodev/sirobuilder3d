@@ -11,6 +11,7 @@ from .operators import (
     group,
     mirror,
     repair,
+    ring,
     select_mark,
     shape_cut,
     simplify,
@@ -19,6 +20,9 @@ from .operators import (
 from .ui import iconos, overlay, panels
 
 _classes = (
+    # El PropertyGroup va primero: `panels._register_props()` le cuelga un
+    # PointerProperty y necesita la clase ya registrada.
+    ring.SIRO_PG_ring,
     cut.SIRO_OT_add_cut_plane,
     cut.SIRO_OT_cut,
     cut.SIRO_OT_cancel_cut,
@@ -30,6 +34,8 @@ _classes = (
     group.SIRO_OT_group,
     group.SIRO_OT_ungroup,
     boolean_ops.SIRO_OT_boolean,
+    ring.SIRO_OT_ring_add,
+    ring.SIRO_OT_ring_apply,
     repair.SIRO_OT_repair,
     simplify.SIRO_OT_simplify,
     mirror.SIRO_OT_mirror,
@@ -44,8 +50,10 @@ _classes = (
     # Una sola pestaña y secciones al ras: el orden de registro ES el orden en
     # que se dibujan, y sigue el flujo de trabajo — acciones → añadir →
     # transformar → cortar (plano, forma) → rellenar → malla → colocar → relieve.
+    # El generador de anillos va con "añadir": genera geometría nueva.
     panels.SIRO_PT_main,
     panels.SIRO_PT_add,
+    panels.SIRO_PT_ring,
     panels.SIRO_PT_transform,
     panels.SIRO_PT_cut,
     panels.SIRO_PT_shape_cut,
