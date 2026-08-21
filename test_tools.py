@@ -692,6 +692,135 @@ for _top in _TOPS:
                 "eso es un bulto seguido de un pellizco")
         bpy.data.objects.remove(o, do_unlink=True)
 
+# La cornisa del hombro: el escalón que Leo reportó como "las bandas de los
+# costados quedan cortadas". Hasta la v0.17.0, adentro del sector del sello el
+# material que flanqueaba la placa caía hasta el ARO PELADO mientras el hombro de
+# al lado ya estaba sobre la recta tangente; en el borde del sello las dos
+# superficies se topaban con un filo de hasta 3,3 mm (0,875 mm en el anillo que lo
+# destapó: óvalo de 8×8 con alto 0,28). Sólo se dispara en las formas cuya huella
+# se angosta antes del borde —óvalo, hexágono, corazón, escudo—; el rectángulo
+# llega al borde con la huella entera y por eso ese caso siempre se vio bien.
+def _secciones(o):
+    """{ángulo de barrido: [(y, radio exterior)]}, ordenado por y"""
+    secs = {}
+    for v in o.data.vertices:
+        # Redondeado: los vértices de una misma sección no comparten el atan2 al
+        # bit, cada uno sale de su propio (r·sin, r·cos).
+        secs.setdefault(round(math.atan2(v.co.x, v.co.z), 4), {}).setdefault(
+            round(v.co.y, 6), []).append(math.hypot(v.co.x, v.co.z))
+    return {th: sorted((y, max(rs)) for y, rs in alto.items()) for th, alto in secs.items()}
+
+
+def _cornisa(o):
+    """Salto del CUERPO al cruzar el borde del sello, en mm.
+
+    Se mide en el canto del anillo —el vértice de |y| extremo, sin interpolar, que
+    es justo donde caía la cornisa— y sólo del lado donde la placa no llega hasta
+    el canto en ninguna de las dos secciones: si llega, ese escalón es el canto
+    del sello, que tiene que estar.
+    """
+    p = o.siro_ring
+    z_placa = ring.DIAMETRO[p.talla] / 2.0 + p.grosor + p.refuerzo + p.top_alto
+    c = ring.contorno_top(p.top, p.top_largo, p.top_ancho, p.redondeo, p.giro)
+    secs = _secciones(o)
+    ths = sorted(secs)
+    peor = 0.0
+    for signo, x_ext in ((1, max(q[0] for q in c)), (-1, -min(q[0] for q in c))):
+        lim = signo * min(1.30, math.atan(x_ext / z_placa))
+        i = min(range(len(ths)), key=lambda k: abs(ths[k] - lim))
+        j = i + signo
+        if not 0 <= j < len(ths):
+            continue
+        borde, afuera = secs[ths[i]], secs[ths[j]]
+        r_placa = max(r for _, r in borde)
+        tapado = [y for y, r in borde if r > r_placa - 1e-4]
+        q0, q1 = (min(tapado), max(tapado)) if tapado else (0.0, 0.0)
+        if q1 < min(borde[-1][0], afuera[-1][0]) - 0.05:
+            peor = max(peor, abs(borde[-1][1] - afuera[-1][1]))
+        if q0 > max(borde[0][0], afuera[0][0]) + 0.05:
+            peor = max(peor, abs(borde[0][1] - afuera[0][1]))
+    return peor
+
+
+def _lim(o):
+    """Ángulo donde termina la placa del sello, del lado +x"""
+    q = o.siro_ring
+    z = ring.DIAMETRO[q.talla] / 2.0 + q.grosor + q.refuerzo + q.top_alto
+    c = ring.contorno_top(q.top, q.top_largo, q.top_ancho, q.redondeo, q.giro)
+    return math.degrees(min(1.30, math.atan(max(v[0] for v in c) / z)))
+
+
+def _codo_hombro(o):
+    """Mayor quiebre de PENDIENTE del semiancho FUERA del sello, en mm por grado.
+
+    Sólo fuera: dentro del sector del sello el contorno en planta es el del sello,
+    y ahí un vértice es la forma pedida —la esquina del rectángulo, la punta del
+    óvalo, que tiene tangente vertical— y no un defecto. Afuera manda el hombro y
+    tiene que ser una curva.
+    """
+    lim = _lim(o) + 1.0
+    secs = _secciones(o)
+    peor = 0.0
+    for signo in (1, -1):  # cada costado por su cuenta: la lista tiene que ser seguida
+        f = [(math.degrees(th), secs[th][-1][0]) for th in sorted(secs)
+             if lim <= signo * math.degrees(th) <= 75]
+        m = [(f[k][1] - f[k - 1][1]) / max(1e-9, f[k][0] - f[k - 1][0])
+             for k in range(1, len(f))]
+        peor = max([peor] + [abs(m[k] - m[k - 1]) for k in range(1, len(m))])
+    return peor
+
+
+def _abraza(o):
+    """Cuánto se pasa el anillo del contorno del sello, en planta y en mm.
+
+    El anillo tiene que ABRAZAR la forma: tan ancho como el sello donde el sello
+    es ancho y como la banda donde no. Sostener el ancho máximo del sello hasta el
+    borde —lo que hacía la v0.18.0— deja un ladrillo alrededor del óvalo, y el
+    hombro sale de ahí con una aleta.
+    """
+    q = o.siro_ring
+    z = ring.DIAMETRO[q.talla] / 2.0 + q.grosor + q.refuerzo + q.top_alto
+    c = ring.contorno_top(q.top, q.top_largo, q.top_ancho, q.redondeo, q.giro)
+    peor = 0.0
+    for th, perfil in _secciones(o).items():
+        if abs(math.degrees(th)) > _lim(o):
+            continue
+        rg = ring._rango_y(c, z * math.tan(th))
+        alto = max(rg[1], q.ancho / 2.0) if rg else q.ancho / 2.0
+        # El marco va por afuera del sello a propósito: es la cinta que lo bordea.
+        peor = max(peor, perfil[-1][0] - alto - q.marco)
+    return peor
+
+
+# En Detalle Alto: con el barrido grueso el paso angular es de 2,8° y la pendiente
+# real del hombro ya vale más que la tolerancia.
+for _top in _TOPS:
+    for _masa, _cint, _g in ((0.6, 0.35, 0), (0.0, 0.0, 0), (0.9, 0.65, 0),
+                             (0.0, 0.0, 30), (0.6, 0.35, 90)):
+        o = _anillo(top=_top, masa=_masa, cintura=_cint, giro=math.radians(_g),
+                    segmentos='512')
+        caso = f"{_top} masa={_masa} cintura={_cint} giro={_g}°"
+        assert _cornisa(o) < 0.35, (
+            f"{caso}: el hombro tiene una cornisa de {_cornisa(o):.3f} mm en el borde "
+            "del sello — el costado de la placa está cayendo al aro en vez de seguir "
+            "por el hombro")
+        assert _codo_hombro(o) < 0.15, (
+            f"{caso}: el semiancho quiebra {_codo_hombro(o):.3f} mm/° fuera del sello "
+            "— el hombro tiene un vértice donde tiene que haber una curva")
+        # Sólo con `masa` en 0: subirla es justamente pedir que la cabeza sostenga
+        # el ancho del sello más allá de su contorno.
+        assert _masa > 0.0 or _abraza(o) < 0.25 * o.siro_ring.ancho / 2.0, (
+            f"{caso}: el anillo se pasa {_abraza(o):.2f} mm del contorno del sello "
+            "— la cabeza es un ladrillo en vez de abrazar la forma")
+        bpy.data.objects.remove(o, do_unlink=True)
+
+# El anillo con óvalo de 8×8 y alto 0,28: el caso exacto de la captura de Leo.
+o = _anillo(top='OVALO', top_largo=8.0, top_ancho=8.0, top_alto=0.28, ancho=5.5,
+            grosor=1.4, refuerzo=1.3, masa=0.0, cintura=0.0, segmentos='512')
+assert _cornisa(o) < 0.35, f"el anillo de la captura sigue con {_cornisa(o):.3f} mm de cornisa"
+assert _bo._open_edge_count(o) == 0, "el anillo de la captura salió abierto"
+bpy.data.objects.remove(o, do_unlink=True)
+
 # Corazón: la muesca es una hendidura del borde de atrás, así que cada posición
 # del sello sigue teniendo un solo tramo de material. Girado 90° la muesca queda
 # a lo largo del aro, la huella se parte en dos y el barrido la rellenaría sola:

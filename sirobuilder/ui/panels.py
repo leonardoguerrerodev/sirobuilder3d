@@ -200,6 +200,7 @@ class SIRO_PT_ring(_SiroSection, bpy.types.Panel):
             col.prop(p, "top_largo")
             col.prop(p, "top_ancho")
             col.prop(p, "top_alto")
+            col.prop(p, "marco")
             if p.top == 'RECTANGULO':
                 col.prop(p, "redondeo")
             col.prop(p, "giro")
