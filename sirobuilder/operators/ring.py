@@ -49,6 +49,7 @@ PERFILES = (
 TOPS = (
     ('RECTANGULO', "Rectángulo", "Sello rectangular de esquinas redondeadas. Con largo = ancho da un cuadrado"),
     ('OVALO', "Óvalo", "Sello ovalado. Con largo = ancho da un círculo"),
+    ('CIRCULO', "Círculo", "Sello redondo. Un solo diámetro: `Ancho del top` no se usa"),
     ('HEXAGONO', "Hexágono", "Sello hexagonal, con las puntas sobre el eje largo. Girá 90° para ponerlas a lo ancho"),
     ('CORAZON', "Corazón", "Punta hacia el frente y muesca hacia atrás. Girado 90° la muesca se rellena (el panel avisa)"),
     ('ESCUDO', "Escudo", "Borde recto y punta al otro lado, para grabar. Girá 90° para que la punta mire al frente"),
@@ -109,7 +110,12 @@ def contorno_top(forma, largo, ancho, redondeo, giro, n=128):
     b = max(1e-4, ancho / 2.0)
     pts = []
 
-    if forma == 'OVALO':
+    if forma == 'CIRCULO':
+        b = a  # un solo diámetro: `ancho` no manda
+        for i in range(n):
+            t = 2.0 * math.pi * i / n
+            pts.append((a * math.cos(t), b * math.sin(t)))
+    elif forma == 'OVALO':
         for i in range(n):
             t = 2.0 * math.pi * i / n
             pts.append((a * math.cos(t), b * math.sin(t)))
@@ -333,6 +339,15 @@ def construir(p):
     puede representar a este ángulo.
     """
     r_int = DIAMETRO[p.talla] / 2.0
+
+    def w_banda(a):
+        """Semiancho de la banda en ese ángulo.
+
+        `afinado` la adelgaza hacia el fondo del aro y la deja entera arriba, así
+        que `Ancho` sigue significando el ancho bajo el sello — la medida que se
+        mira. Es el mismo criterio que `Refuerzo` con `Grosor`."""
+        return p.ancho / 2.0 * (1.0 - p.afinado * (1.0 - math.cos(a)) / 2.0)
+
     w_band = p.ancho / 2.0
     n = int(p.segmentos)
     n_y = _MUESTRAS_Y[n]
@@ -429,12 +444,13 @@ def construir(p):
         a = abs(d)
         huella = r_placa = None
         mezcla, marco = 1.0, 0.0
+        w_b = w_banda(a)
         if not con_top:
-            y0, y1, r_ext = -w_band, w_band, r_banda(a)
+            y0, y1, r_ext = -w_b, w_b, r_banda(a)
         else:
             lim, a_t, r0, borde0, borde1 = lados[1 if d >= 0 else -1]
             if a >= a_t:
-                y0, y1, r_ext = -w_band, w_band, r_banda(a)
+                y0, y1, r_ext = -w_b, w_b, r_banda(a)
             else:
                 mezcla = _suave(a / a_t)
                 r_placa = z_placa / math.cos(a)
@@ -470,10 +486,14 @@ def construir(p):
                 # El marco se suma AFUERA de la huella: la cara del sello
                 # conserva la medida que pide la perilla y el bisel la bordea.
                 marco = p.marco * (1.0 - mezcla)
-                y0 = -_maximo_suave(max(alto0, -y0_top * sost) + marco, w_band, w_band)
-                y1 = _maximo_suave(max(alto1, y1_top * sost) + marco, w_band, w_band)
+                y0 = -_maximo_suave(max(alto0, -y0_top * sost) + marco, w_b, w_b)
+                y1 = _maximo_suave(max(alto1, y1_top * sost) + marco, w_b, w_b)
         r_max = max(r_ext, r_int + 0.05)
-        sec = _seccion(p.perfil, r_int, y0, y1, r_max, n_y, w_band, marco, mezcla,
+        # `pared`: cuánto baja recta la pared de la cabeza bajo el contorno del
+        # sello antes de afinarse hacia la banda. En 0 la cabeza es un cono y el
+        # aro no llega a cubrir el borde de la forma; en 1 baja a plomo.
+        base_y = w_b + ((y1 - y0) / 2.0 - w_b) * p.pared
+        sec = _seccion(p.perfil, r_int, y0, y1, r_max, n_y, base_y, marco, mezcla,
                        huella, r_placa if r_placa is not None else
                        (r_max if huella else None))
         s, c = math.sin(th), math.cos(th)
@@ -568,6 +588,19 @@ class SIRO_PG_ring(bpy.types.PropertyGroup):
     top_alto: bpy.props.FloatProperty(
         name="Alto", description="Material del sello por encima de la banda",
         default=1.5, min=0.1, soft_max=8.0, unit='LENGTH', update=_reconstruir,
+    )
+    pared: bpy.props.FloatProperty(
+        name="Pared",
+        description="Cuánto baja a plomo la pared de la cabeza bajo el contorno del sello. "
+                    "En 0 la cabeza se afina hasta el ancho de la banda y el aro no llega a "
+                    "cubrir el borde de la forma; en 1 baja recta",
+        default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_reconstruir,
+    )
+    afinado: bpy.props.FloatProperty(
+        name="Afinado",
+        description="Adelgaza la banda hacia el fondo del aro. `Ancho` sigue siendo el ancho "
+                    "bajo el sello, igual que `Grosor` es el fondo del aro",
+        default=0.0, min=0.0, max=0.7, subtype='FACTOR', update=_reconstruir,
     )
     marco: bpy.props.FloatProperty(
         name="Marco",

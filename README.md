@@ -102,6 +102,16 @@ blender -b -P test_tools.py
 
   Además: el muestreo del flanco pasó a ser **por ángulo** y no por altura (en una cabeza fina y ancha todo el recorrido en Y caía en el último tramo y el costado salía en escalones de verdad), y el marco entró al presupuesto de grosor junto con el bulto y el chaflán. Las 24 combinaciones siguen cerradas, con ∅ 17,200 mm, sello exacto y planitud 0. Reconstrucción en vivo: **24 ms** en Detalle Medio.
 
+- ✅ **v0.21.0 — Forma `Círculo`, `Pared` y `Afinado`.** Leo mostró un círculo de 14 mm sobre una banda de 5: *"la circunferencia del anillo no cubre los bordes del círculo"*, contra la foto de un anillo real donde la pared baja a plomo bajo el contorno.
+
+  **`Pared` (0–1)** es lo que faltaba, y era lo mismo que venía reportando desde tres pasadas atrás con otras palabras. La sección de la cabeza es un trapecio: ancha arriba, del ancho de la banda contra el agujero. Con un sello mucho más ancho que el aro ese trapecio es un **cono**, y el sello queda flotando sin que el aro llegue a cubrir su borde. `Pared` dice cuánto de esa pared baja **a plomo**: en 0 es el cono de antes, en 1 el aro baja recto bajo el contorno de la forma. Default 0,5.
+
+  **`Afinado` (0–0,7)** adelgaza la banda hacia el fondo del aro y la deja entera arriba —el mismo criterio que `Refuerzo` con `Grosor`—, así `Ancho` sigue significando el ancho bajo el sello, que es la medida que se mira.
+
+  **`Círculo`** es una forma propia con un solo **Diámetro**: `Ancho del top` deja de mostrarse. Óvalo con largo = ancho hacía lo mismo, pero obligaba a mantener dos números iguales a mano.
+
+  Los tres tienen test: la pared cubre el 0,45 del contorno con `Pared` en 0 y el 0,98 en 1; el afinado deja el ancho de arriba clavado en `Ancho` y el del fondo en `Ancho × (1 − Afinado)`. Las 24 combinaciones de forma × perfil pasan a ser 24 con el círculo adentro, todas cerradas, con ∅ 17,200 mm y sello exacto.
+
 - 🧪 **v0.9.0 — pestaña `SiroLab` (en prueba, fuera del toolbar principal): corte por forma estilo Nomad Sculpt.** Un solo gesto sobre el viewport con 5 modos — **Lazo, Línea (cuchillo), Rectángulo, Elipse y Polígono** — aplicado como **Recortar (Trim)** o **Partir (Split)**. Reemplaza al corte libre de dos pasos, que fallaba de raíz: tomaba la dirección de vista al *aplicar* y desde la región equivocada, así que cortaba desde arriba sin importar cómo estuvieras mirando (90° de error, medido en el Blender de Leo). El nuevo modal captura la región `WINDOW` y la vista **al dibujar**, y construye el cortador con rayos reales, así que sale correcto tanto en ortográfica (prisma) como en perspectiva (tronco de pirámide). Vive en su propia pestaña a propósito: cuando esté probado se muda a la sección **Corte** del toolbar principal y el panel se borra.
 
   La lógica del gesto vive en `StrokeState`, **fuera** del operador modal, para que el ciclo de eventos se pueda testear headless con eventos simulados: el primer intento se cancelaba solo con el `RELEASE` del clic que lo lanzaba desde el panel, y ese bug pasó justamente porque esa lógica no era alcanzable por ningún test. La herramienta queda armada tras cortar, para encadenar varios cortes como en Nomad; se sale con `Esc`.

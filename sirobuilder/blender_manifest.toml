@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "sirobuilder"
-version = "0.20.0"
+version = "0.21.0"
 name = "SiroBuilder"
 tagline = "Herramientas estilo 3D Builder para preparar piezas de joyeria"
 maintainer = "Leo <leonardo.gm.dev@gmail.com>"

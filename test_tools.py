@@ -585,7 +585,7 @@ assert len(ring.TALLAS) == 36, f"la tabla de tallas quedó con {len(ring.TALLAS)
 assert ring.DIAMETRO['1'] == 13.0 and ring.DIAMETRO['14'] == 17.2 and ring.DIAMETRO['36'] == 24.2, \
     "la tabla de tallas no coincide con la del dashboard"
 
-_TOPS = ('RECTANGULO', 'OVALO', 'HEXAGONO', 'CORAZON', 'ESCUDO')
+_TOPS = ('RECTANGULO', 'OVALO', 'CIRCULO', 'HEXAGONO', 'CORAZON', 'ESCUDO')
 _PERFILES = ('PLANO', 'MEDIA_CANA', 'CONFORT', 'BISELADO')
 
 
@@ -635,7 +635,10 @@ for _top in _TOPS + ('NINGUNO',):
         if _top != 'NINGUNO':
             assert m["planitud"] < 1e-4, f"{caso}: la cara del sello no es plana ({m['planitud']:.1e})"
             assert abs(m["largo"] - 14.0) < 0.05, f"{caso}: sello de {m['largo']:.2f} mm de largo, se pidieron 14"
-            assert abs(m["ancho"] - 9.0) < 0.05, f"{caso}: sello de {m['ancho']:.2f} mm de ancho, se pidieron 9"
+            # El círculo tiene un solo diámetro: `Ancho del top` no manda.
+            esperado = 14.0 if _top == 'CIRCULO' else 9.0
+            assert abs(m["ancho"] - esperado) < 0.05, \
+                f"{caso}: sello de {m['ancho']:.2f} mm de ancho, se pidieron {esperado}"
         bpy.data.objects.remove(o, do_unlink=True)
 
 # Giro: la huella del sello tiene que coincidir con el bbox del contorno rotado.
@@ -819,6 +822,38 @@ o = _anillo(top='OVALO', top_largo=8.0, top_ancho=8.0, top_alto=0.28, ancho=5.5,
             grosor=1.4, refuerzo=1.3, masa=0.0, cintura=0.0, segmentos='512')
 assert _cornisa(o) < 0.35, f"el anillo de la captura sigue con {_cornisa(o):.3f} mm de cornisa"
 assert _bo._open_edge_count(o) == 0, "el anillo de la captura salió abierto"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# `Pared`: cuánto baja a plomo la pared de la cabeza bajo el contorno del sello.
+# En 0 la cabeza se afina hasta el ancho de la banda y el aro NO llega a cubrir el
+# borde de la forma —el sello queda flotando sobre un cono, que es lo que Leo
+# reportó con el círculo de 14 mm sobre una banda de 5—; en 1 baja recta.
+for _pared, _tapa in ((0.0, 0.45), (1.0, 0.98)):
+    o = _anillo(top='CIRCULO', top_largo=14.0, ancho=5.0, pared=_pared, marco=0.0,
+                masa=0.0, cintura=0.0, segmentos='512')
+    arriba = _secciones(o)[min(_secciones(o), key=abs)]
+    ancho_arriba = arriba[-1][0] - arriba[0][0]
+    r_int = ring.DIAMETRO[o.siro_ring.talla] / 2.0
+    dentro = [v.co.y for v in o.data.vertices
+              if abs(math.atan2(v.co.x, v.co.z)) < 0.02 and math.hypot(v.co.x, v.co.z) < r_int + 0.05]
+    cubre = (max(dentro) - min(dentro)) / ancho_arriba
+    assert abs(cubre - _tapa) < 0.12, (
+        f"pared={_pared}: la pared de la cabeza cubre {cubre:.2f} del contorno del sello, "
+        f"se esperaba {_tapa} (0 = cono, 1 = a plomo)")
+    bpy.data.objects.remove(o, do_unlink=True)
+
+# `Afinado`: adelgaza la banda hacia el fondo y la deja entera arriba, igual que
+# `Refuerzo` con `Grosor`. Si adelgazara parejo, `Ancho` dejaría de ser el ancho
+# bajo el sello, que es la medida que se mira.
+o = _anillo(top='NINGUNO', ancho=6.0)
+for _af in (0.0, 0.3, 0.7):
+    o.siro_ring.afinado = _af
+    vs = [v.co for v in o.data.vertices]
+    arriba = max(abs(v.y) for v in vs if v.z > 0 and abs(v.x) < 0.5)
+    abajo = max(abs(v.y) for v in vs if v.z < 0 and abs(v.x) < 0.5)
+    assert abs(arriba - 3.0) < 0.02, f"afinado {_af}: el ancho bajo el sello dejó de ser `Ancho` ({arriba:.3f})"
+    assert abs(abajo - 3.0 * (1.0 - _af)) < 0.02, \
+        f"afinado {_af}: el fondo del aro mide {abajo:.3f}, se esperaba {3.0 * (1.0 - _af):.3f}"
 bpy.data.objects.remove(o, do_unlink=True)
 
 # Corazón: la muesca es una hendidura del borde de atrás, así que cada posición
