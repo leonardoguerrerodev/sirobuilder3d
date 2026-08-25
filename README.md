@@ -112,6 +112,52 @@ blender -b -P test_tools.py
 
   Los tres tienen test: la pared cubre el 0,45 del contorno con `Pared` en 0 y el 0,98 en 1; el afinado deja el ancho de arriba clavado en `Ancho` y el del fondo en `Ancho × (1 − Afinado)`. Las 24 combinaciones de forma × perfil pasan a ser 24 con el círculo adentro, todas cerradas, con ∅ 17,200 mm y sello exacto.
 
+- ✅ **v0.22.0 — `Cabeza`: qué es la superficie que rodea al sello.** Leo mostró un hexágono girado 90° sobre una banda de 8 mm y fue bajando `Largo` de 12 a 1 mm: *"queda en una forma curva al llegar a 1 mm, siendo que debería ser una superficie plana"*.
+
+  **La cara del sello estaba bien; el problema era lo que la rodeaba.** Medido, a `Largo` 1 mm los vértices que caen exactamente en el plano del sello forman una superficie de **8,00 × 1,00 mm**, plana a 1e-6: las perillas se respetaban. Lo que se veía curvo era la cabeza — la sección del tope caía de 13,850 a 12,111 mm, un **domo de 1,74 mm** sobre los 8 mm de la banda, con la cara de 1 mm perdida adentro como un filo.
+
+  **Y el domo crecía con perillas que no tenían por qué curvarlo:** `Alto` 0,5 / 1,5 / 4 daba 1,40 / 1,74 / 2,50 mm. La causa era una sola línea: `cana = min(grosor * 0.55, …)` con `grosor = r_ext - r_int`, y bajo la placa `r_ext` **es el plano del sello**, así que ese grosor era la cabeza entera —banda + refuerzo + alto, 4,3 mm— y no los 1,8 mm de la banda. Una perilla que sube el sello no puede curvar lo que tiene al lado. Ahora la media caña se dimensiona por el grosor de la **banda**; en la banda pura los dos valores coinciden, así que ahí no cambió nada. Con `Alto` 0,5 y 4 el domo mide lo mismo: 0,713 mm.
+
+  Con eso arreglado, qué es la cara de arriba por **fuera** de la huella pasa a ser una decisión, no un accidente, y Leo pidió las tres elegibles. La perilla nueva **`Cabeza`** las ofrece, y monta sobre `mezcla` —que ya valía 1 en la banda y 0 en la cara del sello— así que el empalme con el hombro sale continuo sin maquinaria nueva:
+
+  - **`Plana`** (default) — el bulto se desvanece con `mezcla`: la cara de arriba es **un solo plano**, y al achicar el sello el top nunca se curva. La meseta mide 0,000 mm de caída con `Largo` 12, 7,6 y 1.
+  - **`Abombada`** — la media caña de siempre, ya sin inflarse con `Alto`. Conserva la medida del sello (8,00 × 1,00) porque el marco va por afuera de la huella.
+  - **`Relieve`** — el sello se para **sobre** el lomo de la banda: el cuerpo es la banda y la placa se suma encima donde la huella la tapa, con el marco bordeándola y una **pared vertical** de 0,95 mm en todo el contorno. Es la doctrina `max(cuerpo, placa)` que el docstring del módulo venía describiendo desde la v0.17.0. `Masa` y `Cintura` no tienen hombro que mover en este modo.
+
+  Dos detalles que costaron una pasada cada uno. El marco del relieve entró primero **hacia adentro** de la huella, y 0,6 mm de marco se comían entera la cara de un sello de 1 mm; va por afuera, como en los otros dos modos. Y la pared del relieve necesita dos muestras pegadas al borde de la huella o el salto se reparte sobre el primer tramo libre —casi un milímetro— y sale como chaflán: van en **todas** las secciones, porque el puenteado cíclico exige el mismo conteo de vértices en todas (sin sello caen sobre el centro y las suelda el `remove_doubles` del final).
+
+  Tests nuevos sobre el caso reportado: los tres modos cerrados y con volumen positivo, `Plana` con menos de 0,03 mm de caída en la meseta (había 1,74), `Abombada` con el domo clavado ante `Alto` y bajo 0,9 mm, y `Relieve` con pared de verdad. `Refuerzo` y `Grosor` **sí** mueven el domo y así queda asentado: son el grosor de la banda. Las 6 formas × 3 modos × 4 perfiles a `Largo` 1 mm — 72 combinaciones — salen cerradas y con volumen positivo.
+
+- ✅ **v0.23.0 — Peso en plata, en vivo.** Leo preguntó cuánto volumen tiene la pieza para calcular los gramos de plata. **El número ya estaba calculado y se tiraba**: `construir()` computa el volumen con signo para decidir si da vuelta las normales —en un cerrado manifold el signo no es una heurística— y después lo descartaba. Ahora lo devuelve, `_reconstruir` lo guarda y el panel muestra `mm³ · g en plata 950` bajo `Detalle`, así que el peso se mira **mientras se mueven las perillas** y no después de exportar, que es cuando sirve para cotizar.
+
+  Dos detalles que sin test habrían salido mal. `calc_volume` mide la malla **local**: con el objeto escalado el peso real no es ése, así que se multiplica por el determinante de la matriz de mundo (el factor de escala al cubo). Y el control del test no es otra corrida del mismo código sino **geometría con fórmula**: una banda `Plano` sin top ni refuerzo es un tubo, y el addon da 945,5 mm³ contra 945,5 teóricos — 0,00 % de error. El caso del escalado se prueba aparte: al doble de tamaño tiene que pesar ocho veces.
+
+  **La densidad es la de la ley 950** (95 % plata fina, 5 % cobre), que es con la que se trabaja acá. Lo que fija el peso no es el peso atómico sino la densidad de la **aleación**, y sale de la regla de volúmenes aditivos sobre los dos metales —plata fina 10,49 y cobre 8,96 g/cm³—: `1/ρ = 0,95/10,49 + 0,05/8,96` → **10,4012 g/cm³**. La misma cuenta devuelve 10,357 para la 925, que es el 10,36 de tabla: ésa es la comprobación de que está bien planteada y no es un número copiado de algún lado.
+
+  **El peso depende de `Detalle`**, y no es un bug: la malla es un poliedro **inscrito** en la superficie barrida, así que siempre queda corta. El mismo anillo da 13,61 g en Bajo, 13,87 en Medio y 14,03 en Alto. Para cotizar, Alto. Y es el peso de la **pieza**: la fundición pide además bebedero, botón y mermas, que no salen de la geometría.
+
+- ✅ **v0.24.0 — El contorno del sello recto, el marco parejo y el peso de cualquier pieza.** Leo mostró un hexágono en vista superior y delineó en rojo cómo tenían que quedar sus lados: **rectos**.
+
+  **La cara seguía el hexágono exacto casi entera, y se inflaba cerca de las puntas.** Medido con sus parámetros —talla 20, banda 8, `Largo` 12, `Ancho del top` 8—, el borde daba 6,109 donde la huella dice 6,000, con el desvío máximo de **+0,194 mm** a 0,6 mm de la punta: el sello salía de **12,219 mm en vez de 12** y la punta quedaba roma. La causa: las cuatro llamadas a `_maximo_suave(…, w_b, w_b)` pasaban **`w_b` como radio de filete**. `w_b` es el semiancho de la banda ENTERO, así que la mezcla entre "ancho del sello" y "ancho de la banda" estaba activa en todo el recorrido en vez de en una franja, y el smooth-max sobrepasa hasta `0,1875·k` — con k = 4 mm, hasta 0,75.
+
+  **No era del hexágono.** Le pegaba a toda forma cuya huella quedara a menos de `w_b` del ancho del aro: un **óvalo 12×8 sobre esa misma banda salía de 9,5 mm de ancho en vez de 8**. Los tests no lo veían porque corren con los defaults (banda 4, sello 9), donde la huella está lejos del ancho del aro y el max sale exacto. Ahora el radio es una constante propia, `SUAVIZADO_PLANTA = 0,25 mm`, elegida para que el sobrepaso máximo (0,047 mm) quede bajo los 0,05 con que los tests miden el sello. Resultado: desvío de la recta **0,001 mm**, sello de **8,000 × 12,000**, y las seis formas midiendo el bbox de su propio contorno.
+
+  **`Marco`, el mismo defecto un paso más allá.** Se desvanecía con `mezcla`, que ya vale 0,34 en el borde del sello: el bisel medía 0,600 mm en el centro y **0,395 en la punta**, un 34 % más angosto, y como `mezcla` no es lineal en θ también curvaba el contorno. El desvanecido sigue existiendo —sin él el bisel de la banda muere bajo el sello y deja una muesca en V— pero pasa a ocurrir en el **hombro**, entre `lim` y `a_t`, que es donde tiene que morir. Medido: 0,600 parejo en todas las secciones del sello.
+
+  **Y el botón `Peso`** en la sección Malla, porque la línea del panel del anillo desaparece justo cuando la pieza está terminada: al aplicarla a malla, después de los cortes y los booleans. Mide cualquier selección y devuelve `mm³ · cm³ · g en plata 950`. Sobre una malla **abierta no inventa un número** —el volumen de una malla abierta no significa nada—: avisa y manda a Reparar malla. Tiene test de que da lo mismo que la línea del panel.
+
+  144 combinaciones (6 formas × 3 `Cabeza` × 4 perfiles × 2 tamaños de sello) cerradas y con volumen positivo.
+
+- ✅ **v0.25.0 — `Redondeo` para toda forma con esquinas, no solo el rectángulo.** Era la única perilla condicionada por forma: hexágono, escudo y corazón tienen esquinas y no había cómo suavizarlas. El código propio del rectángulo se reemplazó por un filete genérico que reconoce esquinas vivas (ángulo interior bajo 150°) en cualquier contorno cerrado y les arma un arco tangente.
+
+  **En el rectángulo, el hexágono y el canto del escudo el radio es exacto**, porque ahí las dos aristas de la esquina son rectas: medido por cuerda, `Redondeo 1,2` da 1,200 mm en las tres. En la **punta y la muesca del corazón** las aristas son curvas de una paramétrica, no rectas de un polígono —y encima una cúspide de 6° pediría recortar 19 veces el radio por lado—, así que quedó **afuera a propósito**: la perilla no aparece con el corazón seleccionado y `contorno_top()` lo confirma con un test (mismo contorno con `Redondeo` 0 o 2).
+
+  **Redondear una punta la acorta**, y eso hubiera sido un bug nuevo del mismo tipo que el de la v0.24.0: un hexágono de 12 mm con 1,2 mm de filete media 11,38 antes de corregirlo, porque el filete se resta del contorno crudo. Ahora el molde se agranda y se vuelve a redondear hasta que el contorno YA filetado mida lo que piden `Largo` y `Ancho del top` —converge en un par de vueltas—, así que el hexágono sigue midiendo 12 × 8 con cualquier radio.
+
+  **Un radio grande no puede comerse la forma.** Dos frenos: el recorte no pasa de la mitad del tramo hacia la esquina vecina (si no, dos filetes se pisan y el contorno se cruza a sí mismo), y no pasa de la mitad del semieje menor de la forma. Con `Redondeo 5` sobre un sello de 6 mm de semiancho, el radio que realmente entra es 2 mm, no 5 — medido, y con test de que ninguna de las tres formas con esquinas sale abierta o con volumen negativo a ese extremo.
+
+  216 combinaciones (6 formas × 3 `Cabeza` × 4 perfiles × 3 radios de `Redondeo`) cerradas y con volumen positivo.
+
 - 🧪 **v0.9.0 — pestaña `SiroLab` (en prueba, fuera del toolbar principal): corte por forma estilo Nomad Sculpt.** Un solo gesto sobre el viewport con 5 modos — **Lazo, Línea (cuchillo), Rectángulo, Elipse y Polígono** — aplicado como **Recortar (Trim)** o **Partir (Split)**. Reemplaza al corte libre de dos pasos, que fallaba de raíz: tomaba la dirección de vista al *aplicar* y desde la región equivocada, así que cortaba desde arriba sin importar cómo estuvieras mirando (90° de error, medido en el Blender de Leo). El nuevo modal captura la región `WINDOW` y la vista **al dibujar**, y construye el cortador con rayos reales, así que sale correcto tanto en ortográfica (prisma) como en perspectiva (tronco de pirámide). Vive en su propia pestaña a propósito: cuando esté probado se muda a la sección **Corte** del toolbar principal y el panel se borra.
 
   La lógica del gesto vive en `StrokeState`, **fuera** del operador modal, para que el ciclo de eventos se pueda testear headless con eventos simulados: el primer intento se cancelaba solo con el `RELEASE` del clic que lo lanzaba desde el panel, y ese bug pasó justamente porque esa lógica no era alcanzable por ningún test. La herramienta queda armada tras cortar, para encadenar varios cortes como en Nomad; se sale con `Esc`.
@@ -217,3 +263,50 @@ blender -b -P test_tools.py
 
   **Y el test tenía el mismo agujero de siempre:** llamaba al operador directo con `**props`, esquivando `_boton` — el camino que el usuario nunca recorre. Ahora pasa por las propiedades reseteadas de verdad, y además fija el centinela: si `scale=(0,0,0)` dejara de colapsar la primitiva en una versión futura de Blender, el test avisa para revisar si la exclusión sigue haciendo falta.
 - ⬜ Fase 4 (nice to have): vaciar/cascarón (FDM), texto 3D de un clic.
+
+## Ideas para el futuro
+
+Analizadas contra el ecosistema en agosto de 2026, para no reimplementar lo que ya existe
+al lado. **JewelCraft** —que Leo tiene instalado en la pestaña de al lado— cubre gemas,
+garras, cutters, biblioteca de componentes, mapas de piedras, reportes JSON/HTML y **peso
+en aleaciones**; sus huecos documentados son justamente *talla* y *generación de aro*, que
+es donde vive SiroBuilder. **MatrixGold** (el CAD pago del rubro) suma wizards paso a paso,
+*smart prongs*, builders de bisel y canal, y **Azure cutters** para vaciar metal del interior
+del aro.
+
+> ⚠️ El `Peso` de la v0.23.0 **se pisa con JewelCraft**, que ya calcula peso en aleaciones.
+> El nuestro se gana el lugar por estar en el panel del anillo vivo —se actualiza mientras
+> se mueven las perillas— y por estar en la ley 950 concreta en vez de una tabla genérica.
+> Antes de invertir más ahí, mirar si JewelCraft no lo resuelve.
+
+Ordenadas por (valor × encaje) / esfuerzo:
+
+1. ⬜ **Verificación de fundibilidad — "¿esto se puede hacer?"** Es la mitad que falta de la
+   v0.23.0: `Peso` responde *cuánto cuesta*, esto responde *si sale del molde*. Marcar dónde
+   la pared baja de **0,8 mm** (mínimo de fundición en plata), avisar si el aro baja de
+   **1 mm**, y avisar si la cara del sello queda bajo los **8 mm** que necesita un monograma
+   legible. Los tres umbrales salen de las guías de fundición, no de una estimación.
+
+   Dos razones por las que va primero: **no se duplica con nada** —JewelCraft no lo hace, y
+   verificado en el Blender de Leo, 5.1 ya no trae el 3D-Print Toolbox (`bpy.ops.mesh` no
+   tiene ningún operador de grosor)—; y **SiroBuilder sabe qué es cada parte**, así que puede
+   decir *"la pared del sello mide 0,45 mm"* en vez de tirar un heatmap genérico: conoce
+   `Grosor`, `Pared` y `Marco` por nombre.
+
+2. ⬜ **Vaciado interior de la cabeza** — el equivalente al Azure cutter de MatrixGold. Ahora
+   que el peso se ve en vivo, esto lo baja y se ve bajar: en una cabeza de sello maciza es
+   plata que no vuelve. Absorbe el "vaciar/cascarón" de la Fase 4.
+
+3. ⬜ **Grabado de texto / monograma en la cara del sello** — es *para lo que existe* un anillo
+   de sello. Hoy hay relieve desde imagen (`depthmap_relief`) pero no texto nativo. El de mayor
+   valor de producto y el de mayor esfuerzo: hay que proyectar la tipografía sobre la cara y
+   bajarla al plano del sello. Absorbe el "texto 3D de un clic" de la Fase 4. Dejarlo para
+   cuando (1) esté cerrado.
+
+Fuentes: [JewelCraft](https://github.com/mrachinskiy/jewelcraft) ·
+[review con sus límites](https://www.toolworthy.ai/tool/jewelcraft) ·
+[MatrixGold](https://gemvision.com/matrixgold) ·
+[Azure cutters y smart prongs](https://aidi.org/matrixgold-jewelry-design-software-update/) ·
+[Materialise — diseño para plata](https://www.materialise.com/en/academy/industrial/design-am/silver) ·
+[i.materialise — tips de joyería](https://3dprint.com/137896/jewelry-basic-tips-i-materialise/) ·
+[Roberts & Co — grabado de sellos](https://www.roberts-and-co.com/blogs/news/the-art-of-engraving-signet-rings)

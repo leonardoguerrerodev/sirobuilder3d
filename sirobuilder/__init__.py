@@ -16,6 +16,7 @@ from .operators import (
     shape_cut,
     simplify,
     snap_dock,
+    weight,
 )
 from .ui import iconos, overlay, panels
 
@@ -38,6 +39,7 @@ _classes = (
     ring.SIRO_OT_ring_apply,
     repair.SIRO_OT_repair,
     simplify.SIRO_OT_simplify,
+    weight.SIRO_OT_weight,
     mirror.SIRO_OT_mirror,
     snap_dock.SIRO_OT_snap_dock,
     align_base.SIRO_OT_align_base,

@@ -659,6 +659,211 @@ for _g in (0, 30, 45, 90):
     assert abs(m["ancho"] - by) < 0.2, f"hexágono a {_g}°: huella de {m['ancho']:.2f} mm de ancho, el contorno mide {by:.2f}"
     bpy.data.objects.remove(o, do_unlink=True)
 
+# `Redondeo` vale para toda forma con esquinas de polígono, no solo el rectángulo: el
+# hexágono tiene seis y el escudo dos (el canto, a 90°). Se mide por la CUERDA entre
+# los dos extremos del arco —`cuerda = r·√2` para una esquina de 90°— porque un ajuste
+# circular de mínimos cuadrados sobre una ventana ancha agarra puntos del tramo recto
+# vecino y da un radio que no es el que se pidió.
+for _f, _esq, _ang in (('RECTANGULO', (6.0, 4.0), 90.0), ('ESCUDO', (-6.0, 4.0), 90.0)):
+    for _r in (0.5, 1.2):
+        _c = ring.contorno_top(_f, 12.0, 8.0, _r, 0.0)
+        _cerca = sorted((q for q in _c if math.dist(q, _esq) < _r * 1.05), key=lambda q: -q[1])
+        assert len(_cerca) >= 2, f"{_f} redondeo {_r}: no se encontró el arco de la esquina"
+        _cuerda = math.dist(_cerca[0], _cerca[-1])
+        _radio = _cuerda / (2.0 * math.sin(math.radians(_ang) / 2.0))
+        assert abs(_radio - _r) < 0.01, f"{_f} redondeo {_r}: radio medido {_radio:.3f} mm"
+        _bx = max(q[0] for q in _c) - min(q[0] for q in _c)
+        _by = max(q[1] for q in _c) - min(q[1] for q in _c)
+        assert abs(_bx - 12.0) < 0.01 and abs(_by - 8.0) < 0.01, \
+            f"{_f} redondeo {_r}: la medida cambió a {_bx:.2f} x {_by:.2f}, se pidió 12 x 8"
+
+# El hexágono es el caso que delató el defecto: redondear las PUNTAS lo acortaba
+# (12 mm con 1,2 de filete daba 11,38) porque el filete se resta del contorno crudo.
+# Ahora se agranda el molde hasta que el contorno YA redondeado mida lo pedido.
+for _r in (0.0, 0.5, 1.2, 2.0):
+    _c = ring.contorno_top('HEXAGONO', 12.0, 8.0, _r, 0.0)
+    _bx = max(q[0] for q in _c) - min(q[0] for q in _c)
+    _by = max(q[1] for q in _c) - min(q[1] for q in _c)
+    assert abs(_bx - 12.0) < 0.01 and abs(_by - 8.0) < 0.01, \
+        f"hexágono redondeo {_r}: mide {_bx:.2f} x {_by:.2f}, se pidió 12 x 8"
+
+# Un radio grande no puede autointersecar el contorno ni dejarlo abierto — el freno
+# por tamaño de la forma es lo que evita que el filete se coma el hexágono entero.
+for _f in ('RECTANGULO', 'HEXAGONO', 'ESCUDO'):
+    o = _anillo(top=_f, top_largo=12.0, top_ancho=8.0, redondeo=5.0, giro=0.0)
+    assert _bo._open_edge_count(o) == 0, f"{_f} redondeo grande: salió abierto"
+    assert _si._volumen(o) > 0, f"{_f} redondeo grande: volumen no positivo"
+    bpy.data.objects.remove(o, do_unlink=True)
+
+# El corazón queda afuera a propósito (cúspides de curva, no vértices de polígono):
+# `Redondeo` no le hace nada.
+_c0 = ring.contorno_top('CORAZON', 12.0, 8.0, 0.0, 0.0)
+_c1 = ring.contorno_top('CORAZON', 12.0, 8.0, 2.0, 0.0)
+assert _c0 == _c1, "el corazón no debería cambiar con `Redondeo`"
+
+# Volumen: es el número con el que se cotiza la plata, así que se compara contra
+# geometría de la que se sabe la respuesta. Una banda `Plano` sin top ni refuerzo es
+# un tubo, y el tubo tiene fórmula. Esto también agarra el error de escala: la malla
+# se mide en LOCAL, y si el objeto está escalado el peso real no es ése.
+o = _anillo(talla='20', perfil='PLANO', ancho=8.0, grosor=1.8, refuerzo=0.0,
+            top='NINGUNO', segmentos='512')
+_ri = ring.DIAMETRO['20'] / 2
+_teorico = math.pi * ((_ri + 1.8) ** 2 - _ri ** 2) * 8.0
+assert abs(o.siro_ring.volumen - _teorico) / _teorico < 0.001, \
+    f"volumen: {o.siro_ring.volumen:.1f} mm³ contra {_teorico:.1f} del tubo equivalente"
+o.scale = (2.0, 2.0, 2.0)
+bpy.context.view_layer.update()  # `matrix_world` se deriva perezosamente
+o.siro_ring.grosor = 2.0  # un valor DISTINTO: reasignar el mismo no dispara `update=`
+_esperado = math.pi * ((_ri + 2.0) ** 2 - _ri ** 2) * 8.0 * 2.0 ** 3
+assert abs(o.siro_ring.volumen - _esperado) / _esperado < 0.001, \
+    f"volumen: con el objeto al doble tiene que pesar 8 veces ({o.siro_ring.volumen:.0f} contra {_esperado:.0f} mm³)"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# El contorno del sello tiene que ser RECTO donde la forma es recta. Leo mostró un
+# hexágono en planta con los lados curvos y delineó en rojo cómo debía quedar: el
+# smooth-max que empalma "ancho del sello" con "ancho de la banda" usaba `w_b` —el
+# semiancho de la banda ENTERO— como radio de filete, así que estaba activo en todo el
+# recorrido y sobrepasaba 0,1875·k. El hexágono salía de 12,219 mm con las puntas
+# romas. Los defaults no lo veían porque ahí la huella está lejos del ancho del aro.
+# `redondeo=0`: estos tests miden el contorno EXACTO de la forma pedida, y
+# `Redondeo` (ver más abajo) ahora actúa también fuera del rectángulo — con su
+# default de 1,5 mm redondearía el hexágono a propósito.
+_PLANTA = dict(talla='20', ancho=8.0, grosor=1.3, refuerzo=0.5, afinado=0.25,
+               top_largo=12.0, top_ancho=8.0, top_alto=0.8, pared=0.42,
+               giro=math.radians(90), masa=0.0, cintura=0.0, redondeo=0.0)
+
+o = _anillo(top='HEXAGONO', marco=0.0, **_PLANTA)
+_zp = ring.DIAMETRO['20'] / 2 + 1.3 + 0.5 + 0.8
+# El BORDE de la cara, no sus vértices interiores: la cara es un polígono lleno, así
+# que se toma el `y` más lejano de cada columna de `x`.
+_borde = {}
+for v in o.data.vertices:
+    if abs(v.co.z - _zp) < 1e-3:
+        _k = round(v.co.x, 3)
+        _borde[_k] = max(_borde.get(_k, 0.0), abs(v.co.y))
+# El hexágono girado 90° tiene la huella `y = 6 - 0.75·|x|`: una recta de la punta al
+# canto. Cada punto del borde tiene que caer sobre ella.
+_desvio = max(abs(y - (6.0 - 0.75 * abs(x))) for x, y in _borde.items())
+assert _desvio < 0.05, f"el lado del hexágono se desvía {_desvio:.3f} mm de la recta"
+_m = _medidas(o)
+assert abs(_m["ancho"] - 12.0) < 0.05, f"sello de {_m['ancho']:.3f} mm de largo, se pidieron 12"
+assert abs(_m["largo"] - 8.0) < 0.05, f"sello de {_m['largo']:.3f} mm de ancho, se pidieron 8"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# El mismo defecto pegaba en TODAS las formas cuya huella quede a menos de `w_b` del
+# ancho de la banda — el óvalo de 8 de ancho salía de 9,5 — así que se prueban las seis
+# contra el bbox de su propio contorno.
+for _f in _TOPS:
+    o = _anillo(top=_f, marco=0.0, **_PLANTA)
+    _c = ring.contorno_top(_f, 12.0, 8.0, o.siro_ring.redondeo, math.radians(90))
+    _m = _medidas(o)
+    for _eje, _real in (("largo", max(q[0] for q in _c) - min(q[0] for q in _c)),
+                        ("ancho", max(q[1] for q in _c) - min(q[1] for q in _c))):
+        assert abs(_m[_eje] - _real) < 0.06, \
+            f"{_f}: la cara mide {_m[_eje]:.3f} mm y el contorno {_real:.3f}"
+    bpy.data.objects.remove(o, do_unlink=True)
+
+# `Marco` mide lo que dice la perilla en TODO el contorno del sello. Se desvanecía con
+# `mezcla`, que ya vale 0,34 en el borde: el bisel iba de 0,600 en el centro a 0,395 en
+# la punta. Ahora el desvanecido ocurre en el HOMBRO, que es donde tiene que morir.
+o = _anillo(top='HEXAGONO', marco=0.6, **_PLANTA)
+_canto, _plana = {}, {}
+for v in o.data.vertices:
+    if v.co.z <= 0:
+        continue
+    _th = round(math.atan2(v.co.x, v.co.z), 5)
+    _canto[_th] = max(_canto.get(_th, 0.0), v.co.y)
+    if abs(v.co.z - _zp) < 1e-3:
+        _plana[_th] = max(_plana.get(_th, 0.0), v.co.y)
+# Sólo donde manda la huella: pasada la cruza con el ancho del aro el canto es la banda.
+_anchos = [_canto[t] - _plana[t] for t in _plana if 0 <= _zp * math.tan(t) < 2.6]
+assert len(_anchos) > 5, "no se midieron suficientes secciones dentro del sello"
+assert max(abs(a - 0.6) for a in _anchos) < 0.05, \
+    f"el marco va de {min(_anchos):.3f} a {max(_anchos):.3f} mm, se pidieron 0,600 parejos"
+bpy.data.objects.remove(o, do_unlink=True)
+
+# El botón `Peso`: mismo número que la línea del panel, y sobre una malla abierta no
+# inventa un volumen (el de una malla abierta no significa nada).
+o = _anillo(top='NINGUNO', talla='20', perfil='PLANO', ancho=8.0, grosor=1.8, refuerzo=0.0,
+            segmentos='512')
+_vol_panel = o.siro_ring.volumen
+bpy.ops.siro.ring_apply()
+assert bpy.ops.siro.weight() == {'FINISHED'}, "el botón Peso no midió un anillo cerrado"
+from sirobuilder.operators import weight as _we
+assert abs(_we._mm3(o) - _vol_panel) < 0.5, \
+    f"el botón mide {_we._mm3(o):.1f} mm³ y el panel {_vol_panel:.1f}"
+bpy.data.objects.remove(o, do_unlink=True)
+
+bpy.ops.mesh.primitive_cube_add(size=10)
+_abierto = bpy.context.active_object
+_bmw = bmesh.new()
+_bmw.from_mesh(_abierto.data)
+_bmw.faces.ensure_lookup_table()
+bmesh.ops.delete(_bmw, geom=[_bmw.faces[0]], context='FACES')
+_bmw.to_mesh(_abierto.data)
+_bmw.free()
+assert bpy.ops.siro.weight() == {'CANCELLED'}, "el botón Peso midió una malla abierta"
+bpy.data.objects.remove(_abierto, do_unlink=True)
+
+# `Cabeza`: qué es la cara de arriba por FUERA de la huella del sello. El caso que
+# lo destapó es el de Leo — hexágono girado 90° con `Largo` bajando a 1 mm sobre una
+# banda de 8 —, donde la huella queda mucho más angosta que el aro. Los tests viejos
+# no lo veían porque con los defaults el sello tapa la sección entera y el clamp
+# `min(r, r_placa)` esconde la media caña de abajo.
+_CASO = dict(talla='20', ancho=8.0, grosor=1.8, refuerzo=1.0, top='HEXAGONO',
+             top_ancho=8.0, top_largo=1.0, top_alto=1.5, marco=0.6,
+             giro=math.radians(90), masa=0.0)
+
+
+def _lomo_arriba(o, y_max=3.5):
+    """z de la sección del tope (θ=0) sobre la meseta, sin el flanco ni el agujero"""
+    zs = [v.co.z for v in o.data.vertices if abs(v.co.x) < 1e-3]
+    tope = max(zs)
+    return [v.co.z for v in o.data.vertices
+            if abs(v.co.x) < 1e-3 and v.co.z > tope - 3.0 and abs(v.co.y) <= y_max]
+
+
+for _cab in ('PLANA', 'ABOMBADA', 'RELIEVE'):
+    o = _anillo(cabeza=_cab, **_CASO)
+    assert _bo._open_edge_count(o) == 0, f"cabeza {_cab}: el anillo salió abierto"
+    assert _si._volumen(o) > 0, f"cabeza {_cab}: volumen no positivo"
+    m = _medidas(o)
+    # El sello mide lo que dice la perilla en los tres modos: a lo largo del anillo
+    # el borde es un paso EXACTO del barrido, así que acá no hay tolerancia que valga.
+    assert abs(m["largo"] - 8.0) < 0.05, f"cabeza {_cab}: sello de {m['largo']:.2f} mm, se pidieron 8"
+    caida = max(_lomo_arriba(o)) - min(_lomo_arriba(o))
+    if _cab == 'PLANA':
+        # Lo que Leo reportó: acá había un domo de 1,74 mm y la cara de 1 mm quedaba
+        # como un filo adentro. Plana quiere decir plana.
+        assert caida < 0.03, f"cabeza PLANA: la meseta cae {caida:.3f} mm, tendría que ser un plano"
+    else:
+        # Abombada y Relieve conservan la medida del sello: el marco va por afuera.
+        assert abs(m["ancho"] - 1.0) < 0.05, f"cabeza {_cab}: sello de {m['ancho']:.2f} mm de ancho, se pidió 1"
+    bpy.data.objects.remove(o, do_unlink=True)
+
+# `Abombada`: el domo lo dimensiona el grosor de la BANDA, no lo alto que esté el
+# sello. Con `grosor = r_ext - r_int` bajo la placa valía la cabeza entera y `Alto`
+# curvaba lo que tenía al lado: 1,40 mm de domo con Alto 0,5 y 2,50 con Alto 4.
+# `Refuerzo` y `Grosor` SÍ deben moverlo: son el grosor de la banda, y una banda más
+# gruesa tiene una media caña más honda. `Alto` no, que es lo que estaba mal.
+_domos = []
+for _alto in (0.5, 1.5, 4.0):
+    o = _anillo(cabeza='ABOMBADA', **dict(_CASO, top_alto=_alto))
+    _domos.append(max(_lomo_arriba(o)) - min(_lomo_arriba(o)))
+    bpy.data.objects.remove(o, do_unlink=True)
+assert max(_domos) - min(_domos) < 0.05, \
+    f"abombada: `Alto` mueve el domo ({', '.join('%.3f' % d for d in _domos)} mm)"
+assert max(_domos) < 0.9, \
+    f"abombada: el domo mide {max(_domos):.3f} mm; con el grosor de la cabeza eran 1,74"
+
+# `Relieve`: el sello se para sobre el lomo de la banda, así que en el mismo `y` hay
+# DOS alturas —la placa y el cuerpo— y entre las dos va una pared, no un chaflán.
+o = _anillo(cabeza='RELIEVE', **_CASO)
+_sec = sorted((round(v.co.y, 3), v.co.z) for v in o.data.vertices if abs(v.co.x) < 1e-3)
+_pared = max((b[1] - a[1] for a, b in zip(_sec, _sec[1:]) if a[0] == b[0]), default=0.0)
+assert _pared > 0.5, f"relieve: el sello no se para sobre la banda (pared de {_pared:.3f} mm)"
+bpy.data.objects.remove(o, do_unlink=True)
+
 # Refuerzo: engorda ARRIBA y deja el fondo del aro en `grosor`. Que engordara
 # todo el aro por igual fue justamente lo que Leo reportó como mal.
 o = _anillo(top='NINGUNO')

@@ -56,6 +56,36 @@ TOPS = (
     ('NINGUNO', "Sin top", "Solo la banda, sin sello"),
 )
 
+# Qué es la cara de arriba de la CABEZA por fuera de la huella del sello. Hasta la
+# v0.21.0 sólo existía `ABOMBADA`, y con una huella más angosta que la banda esa
+# media caña se comía el sello: un hexágono de 1 mm de largo sobre una banda de 8
+# daba un domo de 1,74 mm y la cara plana quedaba como un filo adentro.
+CABEZAS = (
+    ('PLANA', "Plana", "La cara de arriba de la cabeza es un solo plano: al achicar el sello el top no se curva"),
+    ('ABOMBADA', "Abombada", "El lomo de la cabeza sigue la media caña de la banda alrededor del sello"),
+    ('RELIEVE', "Relieve", "El sello se para sobre el lomo de la banda: su contorno se ve aunque sea más angosto que el aro. `Masa` y `Cintura` no aplican"),
+)
+
+# g/mm³ de la plata 950 (95 % plata fina, 5 % cobre), que es la ley con la que se
+# trabaja acá. Lo que fija el peso no es el peso atómico sino la DENSIDAD de la
+# aleación, y ésta sale de la regla de volúmenes aditivos sobre las densidades de
+# los dos metales —plata fina 10,49 y cobre 8,96 g/cm³:
+#     1/ρ = 0,95/10,49 + 0,05/8,96  →  10,4012 g/cm³
+# La misma cuenta devuelve 10,357 para la 925, que es el 10,36 de tabla: ésa es la
+# comprobación de que está bien planteada y no es un número copiado.
+# Es el peso de la PIEZA: la fundición pide además bebedero, botón y mermas, que no
+# salen de la geometría.
+DENSIDAD_PLATA_950 = 0.0104012
+
+# Radio, en mm, del filete que redondea el codo en planta donde la huella del sello
+# cruza el ancho de la banda. Era `w_b` —el semiancho de la banda ENTERO—, así que la
+# mezcla entre "ancho del sello" y "ancho de la banda" estaba activa en TODO el
+# recorrido en vez de en una franja: el smooth-max sobrepasa hasta 0,1875·k, y con
+# k = 4 mm un hexágono de 12 salía de 12,219 con las puntas romas y un óvalo de 8 de
+# ancho salía de 9,5. Con 0,25 el sobrepaso máximo (0,047 mm) queda bajo los 0,05 con
+# que los tests miden el sello, y el codo sigue sin ser un filo.
+SUAVIZADO_PLANTA = 0.25
+
 # El barrido completo, no la mitad: el sello se lleva un tercio de los pasos.
 SEGMENTOS = (
     ('128', "Bajo", "Rápido de reconstruir; se notan las facetas en el sello"),
@@ -99,6 +129,91 @@ def _maximo_suave(a, b, k):
     return b + k * x * x * x * (2.0 - x)
 
 
+# Ángulo interior por debajo del cual un vértice cuenta como esquina viva. Un óvalo
+# de 128 puntos gira 2,8° por vértice —177,2° de interior— y no entra ni de casualidad;
+# el hexágono tiene 106° y 127°, el escudo 90°.
+_ESQUINA = math.radians(150.0)
+
+
+def _redondear(pts, r, tope, n_arco=6):
+    """Reemplaza cada esquina viva del contorno cerrado por un arco tangente tope `r`.
+
+    Un filete de radio `r` en una esquina de ángulo interior θ hay que recortarlo
+    `r / tan(θ/2)` sobre cada lado, medido DESDE la esquina. Donde los dos lados son
+    rectos (rectángulo, hexágono, el canto del escudo) el arco es tangente exacto y
+    `Redondeo` vale lo que dice.
+
+    `tope` es el segundo freno, por tamaño de la forma: sin él, una esquina muy
+    aguda pediría recortar más de lo que la forma tiene y el filete se comería el
+    contorno entero. Con el freno, el filete es el más grande que entra.
+    """
+    n = len(pts)
+    if r <= 0.0 or n < 3:
+        return pts
+
+    def _dir(i, j):
+        dx, dy = pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]
+        L = math.hypot(dx, dy)
+        return None if L < 1e-9 else (dx / L, dy / L)
+
+    esquinas = []
+    for i in range(n):
+        u, v = _dir(i, (i - 1) % n), _dir(i, (i + 1) % n)
+        if u is None or v is None:
+            continue
+        ang = math.acos(max(-1.0, min(1.0, u[0] * v[0] + u[1] * v[1])))
+        if ang < _ESQUINA:
+            esquinas.append((i, u, v, ang))
+    if not esquinas:
+        return pts
+
+    seg = [math.hypot(pts[(i + 1) % n][0] - pts[i][0], pts[(i + 1) % n][1] - pts[i][1])
+           for i in range(n)]
+
+    def _arco(i, j):
+        """Largo de polilínea de `i` a `j` yendo hacia adelante"""
+        total, k = 0.0, i
+        while k != j:
+            total += seg[k]
+            k = (k + 1) % n
+        return total or sum(seg)
+
+    # El recorte no puede pasar de la mitad del tramo que separa dos esquinas, o dos
+    # filetes vecinos se pisan y el contorno se cruza a sí mismo.
+    m = len(esquinas)
+    cortes = []
+    for k, (i, u, v, ang) in enumerate(esquinas):
+        vecinas = 0.45 * min(_arco(esquinas[(k - 1) % m][0], i), _arco(i, esquinas[(k + 1) % m][0]))
+        cortes.append(min(r / math.tan(ang / 2.0), vecinas, tope))
+
+    fuera = []
+    for k, (i, u, v, ang) in enumerate(esquinas):
+        d = cortes[k]
+        rad = d * math.tan(ang / 2.0)  # el radio que de verdad entró, ya acotado
+        bx, by = u[0] + v[0], u[1] + v[1]
+        bl = math.hypot(bx, by)
+        if rad < 1e-6 or bl < 1e-9:
+            fuera.append(pts[i])
+        else:
+            h = rad / math.sin(ang / 2.0)  # esquina → centro, sobre la bisectriz
+            cen = (pts[i][0] + bx / bl * h, pts[i][1] + by / bl * h)
+            t0 = math.atan2(pts[i][1] + u[1] * d - cen[1], pts[i][0] + u[0] * d - cen[0])
+            t1 = math.atan2(pts[i][1] + v[1] * d - cen[1], pts[i][0] + v[0] * d - cen[0])
+            giro_arco = (t1 - t0 + math.pi) % (2.0 * math.pi) - math.pi  # por el lado corto
+            fuera.extend((cen[0] + rad * math.cos(t0 + giro_arco * q / n_arco),
+                          cen[1] + rad * math.sin(t0 + giro_arco * q / n_arco))
+                         for q in range(n_arco + 1))
+        # Los vértices originales hasta la esquina siguiente, salvo los que se comen
+        # este filete y el de allá.
+        j, largo, i_sig, d_sig = (i + 1) % n, 0.0, esquinas[(k + 1) % m][0], cortes[(k + 1) % m]
+        while j != i_sig:
+            largo += seg[(j - 1) % n]
+            if largo > d and _arco(j, i_sig) > d_sig:
+                fuera.append(pts[j])
+            j = (j + 1) % n
+    return fuera
+
+
 def contorno_top(forma, largo, ancho, redondeo, giro, n=128):
     """Contorno cerrado del sello visto desde arriba, ya girado. Lista de (x, y).
 
@@ -106,60 +221,81 @@ def contorno_top(forma, largo, ancho, redondeo, giro, n=128):
     dibuja en su propio marco con `largo` sobre x y `ancho` sobre y, y después se
     rota entera: por eso el giro es libre y no dos posiciones fijas.
     """
+    def _crudo(a, b):
+        pts = []
+        if forma == 'CIRCULO':
+            b = a  # un solo diámetro: `ancho` no manda
+            for i in range(n):
+                t = 2.0 * math.pi * i / n
+                pts.append((a * math.cos(t), b * math.sin(t)))
+        elif forma == 'OVALO':
+            for i in range(n):
+                t = 2.0 * math.pi * i / n
+                pts.append((a * math.cos(t), b * math.sin(t)))
+        elif forma == 'HEXAGONO':
+            # Puntas sobre el eje largo; los dos lados largos, rectos.
+            pts = [(a, 0.0), (a / 2.0, b), (-a / 2.0, b), (-a, 0.0), (-a / 2.0, -b), (a / 2.0, -b)]
+        elif forma == 'CORAZON':
+            # El eje de simetría va sobre Y —punta abajo, muesca arriba— y NO sobre X.
+            # No es capricho: la muesca tiene que ser una hendidura del borde de
+            # arriba para que cada x siga teniendo un solo tramo de material. Con el
+            # eje sobre X la huella se parte en dos y el barrido no puede
+            # representarla (ver `_rango_y` y el aviso del panel).
+            crudo = []
+            for i in range(n):
+                t = 2.0 * math.pi * i / n
+                x = 16.0 * math.sin(t) ** 3
+                y = 13.0 * math.cos(t) - 5.0 * math.cos(2 * t) - 2.0 * math.cos(3 * t) - math.cos(4 * t)
+                crudo.append((x, y))
+            # La curva no está centrada —va de -17 a +5 en y— así que se encaja en su
+            # bbox y no se divide por el máximo absoluto: si no, el corazón salía
+            # descentrado y con 6 mm de alto en vez de los 9 pedidos.
+            xs = [q[0] for q in crudo]
+            ys = [q[1] for q in crudo]
+            cx, ex = (min(xs) + max(xs)) / 2.0, max(1e-9, max(xs) - min(xs))
+            cy, ey = (min(ys) + max(ys)) / 2.0, max(1e-9, max(ys) - min(ys))
+            pts = [((q[0] - cx) * 2.0 * a / ex, (q[1] - cy) * 2.0 * b / ey) for q in crudo]
+        elif forma == 'ESCUDO':
+            # Borde recto en -x, punta en +x: lados rectos el primer tramo y después
+            # un cuarto de elipse hasta la punta.
+            k = max(4, n // 4)
+            arriba = []
+            for i in range(k + 1):
+                t = i / k
+                h = b if t <= 0.35 else b * math.sqrt(max(0.0, 1.0 - ((t - 0.35) / 0.65) ** 2))
+                arriba.append((-a + 2.0 * a * t, h))
+            pts = arriba + [(x, -y) for x, y in reversed(arriba)]
+        else:  # RECTANGULO: pelado, que `_redondear` le pone las esquinas
+            pts = [(a, b), (-a, b), (-a, -b), (a, -b)]
+        return pts
+
+    def _bbox(P):
+        return (max(q[0] for q in P) - min(q[0] for q in P),
+                max(q[1] for q in P) - min(q[1] for q in P))
+
     a = max(1e-4, largo / 2.0)
     b = max(1e-4, ancho / 2.0)
-    pts = []
-
-    if forma == 'CIRCULO':
-        b = a  # un solo diámetro: `ancho` no manda
-        for i in range(n):
-            t = 2.0 * math.pi * i / n
-            pts.append((a * math.cos(t), b * math.sin(t)))
-    elif forma == 'OVALO':
-        for i in range(n):
-            t = 2.0 * math.pi * i / n
-            pts.append((a * math.cos(t), b * math.sin(t)))
-    elif forma == 'HEXAGONO':
-        # Puntas sobre el eje largo; los dos lados largos, rectos.
-        pts = [(a, 0.0), (a / 2.0, b), (-a / 2.0, b), (-a, 0.0), (-a / 2.0, -b), (a / 2.0, -b)]
-    elif forma == 'CORAZON':
-        # El eje de simetría va sobre Y —punta abajo, muesca arriba— y NO sobre X.
-        # No es capricho: la muesca tiene que ser una hendidura del borde de
-        # arriba para que cada x siga teniendo un solo tramo de material. Con el
-        # eje sobre X la huella se parte en dos y el barrido no puede
-        # representarla (ver `_rango_y` y el aviso del panel).
-        crudo = []
-        for i in range(n):
-            t = 2.0 * math.pi * i / n
-            x = 16.0 * math.sin(t) ** 3
-            y = 13.0 * math.cos(t) - 5.0 * math.cos(2 * t) - 2.0 * math.cos(3 * t) - math.cos(4 * t)
-            crudo.append((x, y))
-        # La curva no está centrada —va de -17 a +5 en y— así que se encaja en su
-        # bbox y no se divide por el máximo absoluto: si no, el corazón salía
-        # descentrado y con 6 mm de alto en vez de los 9 pedidos.
-        xs = [q[0] for q in crudo]
-        ys = [q[1] for q in crudo]
-        cx, ex = (min(xs) + max(xs)) / 2.0, max(1e-9, max(xs) - min(xs))
-        cy, ey = (min(ys) + max(ys)) / 2.0, max(1e-9, max(ys) - min(ys))
-        pts = [((q[0] - cx) * 2.0 * a / ex, (q[1] - cy) * 2.0 * b / ey) for q in crudo]
-    elif forma == 'ESCUDO':
-        # Borde recto en -x, punta en +x: lados rectos el primer tramo y después
-        # un cuarto de elipse hasta la punta.
-        k = max(4, n // 4)
-        arriba = []
-        for i in range(k + 1):
-            t = i / k
-            h = b if t <= 0.35 else b * math.sqrt(max(0.0, 1.0 - ((t - 0.35) / 0.65) ** 2))
-            arriba.append((-a + 2.0 * a * t, h))
-        pts = arriba + [(x, -y) for x, y in reversed(arriba)]
-    else:  # RECTANGULO con esquinas de radio `redondeo`
-        r = min(redondeo, a, b)
-        k = max(2, n // 8)
-        for cx, cy, a0 in ((a - r, b - r, 0.0), (-(a - r), b - r, math.pi / 2.0),
-                           (-(a - r), -(b - r), math.pi), (a - r, -(b - r), 1.5 * math.pi)):
-            for i in range(k + 1):
-                t = a0 + (math.pi / 2.0) * i / k
-                pts.append((cx + r * math.cos(t), cy + r * math.sin(t)))
+    pts = _crudo(a, b)
+    # `Redondeo` vale para toda forma con esquinas de polígono, no solo el rectángulo:
+    # el hexágono tiene seis y el escudo dos. El óvalo y el círculo no tienen ninguna
+    # y esto no hace nada. El corazón queda afuera a propósito (ver el panel): sus
+    # esquinas son cúspides de 6° de una curva, no vértices de polígono, y un radio
+    # ahí o no se nota o deforma la forma.
+    if redondeo > 0.0 and forma != 'CORAZON':
+        objetivo = _bbox(pts)
+        ea, eb = a, b
+        # Redondear una PUNTA la acorta: un hexágono de 12 mm con 1,2 mm de filete
+        # medía 11,38. `Largo` y `Ancho del top` son medidas, no sugerencias, así que
+        # se agranda el molde y se vuelve a redondear hasta que el contorno mida lo
+        # pedido. Converge en un par de vueltas; el rectángulo y el escudo entran
+        # derecho porque sus lados rectos ya tocan el bbox.
+        for _ in range(5):
+            pts = _redondear(_crudo(ea, eb), redondeo, 0.5 * min(a, b), max(2, n // 24))
+            bx, by = _bbox(pts)
+            if abs(bx - objetivo[0]) < 1e-4 and abs(by - objetivo[1]) < 1e-4:
+                break
+            ea *= objetivo[0] / max(1e-9, bx)
+            eb *= objetivo[1] / max(1e-9, by)
 
     if abs(giro) < 1e-9:
         return pts
@@ -213,7 +349,7 @@ def _muestras_y(cortes, n):
 
 
 def _seccion(perfil, r_int, y0, y1, r_ext, n_y, w_base, marco=0.0, mezcla=1.0,
-             huella=None, r_placa=None):
+             huella=None, r_placa=None, cabeza='PLANA', crown=None):
     """Contorno cerrado de la sección, en (y, radio). Siempre devuelve 2*n_y puntos.
 
     El conteo tiene que ser el mismo en todas las secciones o el puenteado
@@ -239,16 +375,27 @@ def _seccion(perfil, r_int, y0, y1, r_ext, n_y, w_base, marco=0.0, mezcla=1.0,
     centro = (y0 + y1) / 2.0
     medio = max(1e-6, (y1 - y0) / 2.0)
     w_b = min(max(1e-6, w_base), medio)
-    cana = min(grosor * 0.55, medio * 0.9)
-    # La cabeza es siempre una media caña: `Perfil` describe la sección de la
-    # BANDA. Con `Plano` aplicado también arriba, la cara del sello quedaba al ras
-    # del cuerpo y el contorno del sello desaparecía — se aplanaba todo.
-    bulto = cana * (1.0 - mezcla)
-    chaflan = 0.0
-    if perfil in ('MEDIA_CANA', 'CONFORT'):
-        bulto += cana * mezcla
-    elif perfil == 'BISELADO':
-        chaflan = min(grosor * 0.35, medio * 0.35) * mezcla
+    # La media caña se dimensiona por el grosor de la BANDA (`crown`), no por
+    # `r_ext - r_int`: bajo la placa ese grosor es la CABEZA entera —banda +
+    # refuerzo + alto— y entonces subir `Alto` abombaba el lomo que rodea al sello
+    # (domo de 1,40 mm con Alto 0,5 y de 2,50 mm con Alto 4). Una perilla que sube
+    # el sello no puede curvar lo que tiene al lado. En la banda pura `crown` y
+    # `grosor` valen lo mismo, así que ahí no cambia nada.
+    cana = min((grosor if crown is None else max(1e-4, crown)) * 0.55, medio * 0.9)
+    relieve = cabeza == 'RELIEVE'
+    # `mezcla` vale 1 en la banda y 0 en la cara del sello: ya es el desvanecido de
+    # "cuánto de esto es banda". `Perfil` manda sobre la banda y `Cabeza` sobre lo
+    # que rodea al sello:
+    #   PLANA    — el bulto se va con `mezcla`, así que la cara de arriba es un plano.
+    #   ABOMBADA — media caña también arriba, como hasta la v0.21.0.
+    #   RELIEVE  — el cuerpo ES la banda (la placa se suma aparte, ver `lomo`), así
+    #              que lleva la media caña de la banda entera.
+    banda = cana if perfil in ('MEDIA_CANA', 'CONFORT') else 0.0
+    if cabeza == 'ABOMBADA':
+        bulto = cana * (1.0 - mezcla) + banda * mezcla
+    else:
+        bulto = banda if relieve else banda * mezcla
+    chaflan = min(grosor * 0.35, medio * 0.35) * mezcla if perfil == 'BISELADO' else 0.0
     # El interior de confort NO se apaga bajo el sello: es la superficie que toca
     # el dedo y tiene que ser igual en toda la vuelta.
     confort = min(0.25, grosor * 0.2) if perfil == 'CONFORT' else 0.0
@@ -260,12 +407,13 @@ def _seccion(perfil, r_int, y0, y1, r_ext, n_y, w_base, marco=0.0, mezcla=1.0,
     else:  # sin sello no hay plano que corte, y la cara plana es un punto al medio
         q0 = q1 = centro
         r_placa = None
-    base = r_ext if r_placa is None else r_placa
+    base = r_ext if r_placa is None or relieve else r_placa
     # El marco baja a 45°. Ni él ni el bulto ni el chaflán pueden comerse la
     # sección: se SUMAN en el lomo, y en una cabeza fina y ancha —un sello de 10 mm
     # sobre una banda de 1,6 mm de grosor— llegaban a apoyarse contra el agujero y
     # el costado salía en escalones.
-    hondo = marco
+    # En relieve el marco bordea la placa y no el canto de la sección (ver `lomo`).
+    hondo = 0.0 if relieve else marco
     sobra = (base - r_int) * 0.85 / max(1e-9, hondo + bulto + chaflan)
     if sobra < 1.0:
         hondo, bulto, chaflan = hondo * sobra, bulto * sobra, chaflan * sobra
@@ -298,13 +446,39 @@ def _seccion(perfil, r_int, y0, y1, r_ext, n_y, w_base, marco=0.0, mezcla=1.0,
             # en un sello asimétrico entra por debajo de la cara plana y se la come.
             r -= chaflan * max(0.0, u - borde) / max(1e-9, 1.0 - borde)
         r = max(r, r_int + 0.02)
-        return min(r, r_placa) if r_placa is not None else r
+        if r_placa is None:
+            return r
+        if not relieve:
+            return min(r, r_placa)
+        # El relieve: la placa se para SOBRE el cuerpo donde la huella la tapa, con
+        # el marco biselando su borde hacia adentro. Afuera manda el cuerpo, y el
+        # salto entre los dos es la pared del sello.
+        # El marco se suma AFUERA de la huella, igual que en los otros dos modos:
+        # la cara del sello conserva la medida que pide la perilla y el bisel la
+        # bordea. Metiéndolo hacia adentro, un marco de 0,6 se comía entera la cara
+        # de un sello de 1 mm.
+        if q0 - marco <= y <= q1 + marco:
+            d = min(y - q0 + marco, q1 + marco - y)
+            return max(r, r_placa - marco + min(marco, d))
+        return r
 
     n_lado = max(3, n_y // 2)
     n_hueco = max(2, n_y // 3)
-    cortes = (y0, eje - mitades[1][3] * mitades[1][0], q0, q1,
-              eje + mitades[0][3] * mitades[0][0], y1)
+    if relieve:
+        # El marco bordea la huella, así que sus quiebres son los del sello y no los
+        # del canto de la sección.
+        cortes = (y0, max(y0, q0 - marco), q0, q1, min(y1, q1 + marco), y1)
+    else:
+        cortes = (y0, eje - mitades[1][3] * mitades[1][0], q0, q1,
+                  eje + mitades[0][3] * mitades[0][0], y1)
     ys = _muestras_y(cortes, 2 * n_y - n_hueco - 2 * n_lado)
+    if relieve:
+        # Dos muestras pegadas por AFUERA del borde de la huella: sin ellas el salto
+        # de la placa al cuerpo se reparte sobre el primer tramo libre —casi un
+        # milímetro— y la pared del relieve sale como un chaflán. Van en TODAS las
+        # secciones (sin sello caen sobre el centro y no molestan) porque el
+        # puenteado cíclico exige el mismo conteo de vértices en todas.
+        ys = sorted(ys + [max(y0, q0 - marco - 1e-4), min(y1, q1 + marco + 1e-4)])
 
     def flanco(y_ext, hacia_arriba):
         """Cuarto de elipse entre el punto más ancho del lomo y el agujero.
@@ -449,7 +623,23 @@ def construir(p):
             y0, y1, r_ext = -w_b, w_b, r_banda(a)
         else:
             lim, a_t, r0, borde0, borde1 = lados[1 if d >= 0 else -1]
-            if a >= a_t:
+            if p.cabeza == 'RELIEVE':
+                # El sello deja de ser una cabeza con hombros y pasa a ser un
+                # relieve parado sobre la banda: el cuerpo es la banda de siempre y
+                # la placa se SUMA encima donde la huella la tapa. Por eso la pared
+                # sale vertical en todo el contorno —los extremos incluidos— y no
+                # hay hombro que `Masa` o `Cintura` puedan mover.
+                r_ext = r_banda(a)
+                if a <= lim + 1e-9:
+                    huella = _huella(z_placa * math.tan(d))
+                    r_placa = z_placa / math.cos(a)
+                    marco = p.marco
+                    k = min(SUAVIZADO_PLANTA, w_b)
+                    y0 = -_maximo_suave(-huella[0] + marco, w_b, k)
+                    y1 = _maximo_suave(huella[1] + marco, w_b, k)
+                else:
+                    y0, y1 = -w_b, w_b
+            elif a >= a_t:
                 y0, y1, r_ext = -w_b, w_b, r_banda(a)
             else:
                 mezcla = _suave(a / a_t)
@@ -461,6 +651,11 @@ def construir(p):
                 # bloque macizo de los sellos clásicos— y después lo suelta.
                 sost = 0.0 if masa <= 0.0 else 1.0 - _suave(min(1.0, a / a_t / masa))
                 if a <= lim + 1e-9:  # holgura por el ulp del paso exacto del borde
+                    # El marco mide lo que dice la perilla en TODO el contorno del
+                    # sello. Desvanecerlo con `mezcla` —que ya vale 0,34 en el borde—
+                    # lo dejaba en 0,395 de los 0,600 pedidos justo en la punta, y
+                    # como `mezcla` no es lineal en θ también curvaba el contorno.
+                    marco = p.marco
                     huella = _huella(z_placa * math.tan(d))
                     # La cresta del cuerpo sale del plano del sello. En `lim`
                     # coincide con la tangente por construcción —la recta se trazó
@@ -472,6 +667,10 @@ def construir(p):
                     uu = (a - lim) / (a_t - lim)
                     suelta = 1.0 - _suave(uu)
                     alto0, alto1 = borde0 * suelta, borde1 * suelta
+                    # El desvanecido del marco va acá, en el hombro: sin él el bisel
+                    # de la banda muere bajo el sello y deja una muesca en V. En `lim`
+                    # vale `p.marco` como la rama de arriba y en `a_t` llega a 0.
+                    marco = p.marco * suelta
                     recta = r0 / math.cos(a_t - a)
                     # `cintura` tira la recta hacia la banda con un bombo que vale
                     # 0 en los dos extremos: ni el borde del sello ni el punto de
@@ -485,9 +684,9 @@ def construir(p):
                     huella = (-alto0, alto1)
                 # El marco se suma AFUERA de la huella: la cara del sello
                 # conserva la medida que pide la perilla y el bisel la bordea.
-                marco = p.marco * (1.0 - mezcla)
-                y0 = -_maximo_suave(max(alto0, -y0_top * sost) + marco, w_b, w_b)
-                y1 = _maximo_suave(max(alto1, y1_top * sost) + marco, w_b, w_b)
+                k = min(SUAVIZADO_PLANTA, w_b)
+                y0 = -_maximo_suave(max(alto0, -y0_top * sost) + marco, w_b, k)
+                y1 = _maximo_suave(max(alto1, y1_top * sost) + marco, w_b, k)
         r_max = max(r_ext, r_int + 0.05)
         # `pared`: cuánto baja recta la pared de la cabeza bajo el contorno del
         # sello antes de afinarse hacia la banda. En 0 la cabeza es un cono y el
@@ -495,7 +694,7 @@ def construir(p):
         base_y = w_b + ((y1 - y0) / 2.0 - w_b) * p.pared
         sec = _seccion(p.perfil, r_int, y0, y1, r_max, n_y, base_y, marco, mezcla,
                        huella, r_placa if r_placa is not None else
-                       (r_max if huella else None))
+                       (r_max if huella else None), p.cabeza, r_banda(a) - r_int)
         s, c = math.sin(th), math.cos(th)
         anillos.append([bm.verts.new((r * s, y, r * c)) for y, r in sec])
 
@@ -517,7 +716,8 @@ def construir(p):
     # dada vuelta y volumen negativo, que es lo que el resto del pipeline usa para
     # decidir si una pieza sirve. En un cerrado manifold el signo del volumen NO
     # es una heurística, así que manda él.
-    if bm.calc_volume(signed=True) < 0.0:
+    volumen = bm.calc_volume(signed=True)
+    if volumen < 0.0:
         bmesh.ops.reverse_faces(bm, faces=bm.faces)
     # Sombreado suave con las aristas vivas marcadas. No es cosmético: el anillo
     # es una superficie barrida y en plano se ve como una escalera de facetas —
@@ -529,7 +729,7 @@ def construir(p):
     for e in bm.edges:
         if len(e.link_faces) == 2 and e.calc_face_angle(0.0) > 0.35:  # 20°
             e.smooth = False
-    return bm, partida
+    return bm, partida, abs(volumen)
 
 
 def _reconstruir(self, context):
@@ -538,7 +738,7 @@ def _reconstruir(self, context):
     obj = self.id_data
     if not self.activo or obj is None or obj.type != 'MESH':
         return
-    bm, partida = construir(self)
+    bm, partida, volumen = construir(self)
     bm.to_mesh(obj.data)  # la misma malla: conserva transform, materiales y selección
     bm.free()
     obj.data.update()
@@ -546,6 +746,10 @@ def _reconstruir(self, context):
     # callback `update=` y entraría en bucle. Escribir por clave toca la
     # ID-property directo y no dispara nada.
     self["aviso_huella"] = partida
+    # `calc_volume` mide la malla LOCAL: si el objeto está escalado, el peso real no
+    # es ése. El determinante de la matriz de mundo es el factor de escala al cubo,
+    # que es justo lo que hay que multiplicar.
+    self["volumen"] = volumen * abs(obj.matrix_world.determinant())
 
 
 class SIRO_PG_ring(bpy.types.PropertyGroup):
@@ -596,6 +800,11 @@ class SIRO_PG_ring(bpy.types.PropertyGroup):
                     "cubrir el borde de la forma; en 1 baja recta",
         default=0.5, min=0.0, max=1.0, subtype='FACTOR', update=_reconstruir,
     )
+    cabeza: bpy.props.EnumProperty(
+        name="Cabeza",
+        description="Qué es la cara de arriba de la cabeza por fuera de la huella del sello",
+        items=CABEZAS, default='PLANA', update=_reconstruir,
+    )
     afinado: bpy.props.FloatProperty(
         name="Afinado",
         description="Adelgaza la banda hacia el fondo del aro. `Ancho` sigue siendo el ancho "
@@ -609,7 +818,9 @@ class SIRO_PG_ring(bpy.types.PropertyGroup):
         default=0.6, min=0.0, soft_max=3.0, unit='LENGTH', update=_reconstruir,
     )
     redondeo: bpy.props.FloatProperty(
-        name="Redondeo", description="Radio de las esquinas del sello rectangular",
+        name="Redondeo",
+        description="Radio de las esquinas del sello. Exacto en el rectángulo, el hexágono "
+                    "y el canto del escudo. Sin efecto en óvalo, círculo y corazón",
         default=1.5, min=0.0, soft_max=8.0, unit='LENGTH', update=_reconstruir,
     )
     giro: bpy.props.FloatProperty(
@@ -634,6 +845,10 @@ class SIRO_PG_ring(bpy.types.PropertyGroup):
     )
     aviso_huella: bpy.props.BoolProperty(
         name="Huella partida", default=False, options={'HIDDEN'},
+    )
+    volumen: bpy.props.FloatProperty(
+        name="Volumen", description="mm³ de la última reconstrucción", default=0.0,
+        options={'HIDDEN'},
     )
     segmentos: bpy.props.EnumProperty(
         name="Detalle", description="Pasos del barrido alrededor del anillo",

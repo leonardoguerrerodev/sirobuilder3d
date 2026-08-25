@@ -206,7 +206,10 @@ class SIRO_PT_ring(_SiroSection, bpy.types.Panel):
             col.prop(p, "top_alto")
             col.prop(p, "marco")
             col.prop(p, "pared")
-            if p.top == 'RECTANGULO':
+            col.prop(p, "cabeza")
+            # Sin efecto en las redondas (sin esquinas) ni en el corazón (cúspides
+            # de curva, no vértices de polígono): ver la descripción de la perilla.
+            if p.top not in ('OVALO', 'CIRCULO', 'CORAZON'):
                 col.prop(p, "redondeo")
             col.prop(p, "giro")
             if p.aviso_huella:
@@ -216,6 +219,14 @@ class SIRO_PT_ring(_SiroSection, bpy.types.Panel):
             col.prop(p, "cintura")
         col.separator()
         col.prop(p, "segmentos")
+        # El peso es lo que decide si la pieza se puede cotizar, así que se mira
+        # mientras se mueven las perillas y no después de exportar.
+        # Sin `volumen` (anillo de un .blend anterior a la perilla) la línea no se
+        # esconde: en blanco el panel parece roto, y el número vuelve solo al
+        # primer cambio de medida.
+        _aviso(col, f"{p.volumen:.0f} mm³ · {p.volumen * ring.DENSIDAD_PLATA_950:.2f} g "
+                    f"en plata 950" if p.volumen else
+                    "Peso: mové cualquier medida para calcularlo")
 
         col = layout.column()
         col.scale_y = BOTON
@@ -368,6 +379,7 @@ class SIRO_PT_mesh(_SiroSection, bpy.types.Panel):
         col.scale_y = BOTON
         _boton(col, "siro.repair", icon='MODIFIER_ON')
         _boton(col, "siro.simplify", icon='MOD_DECIM')
+        _boton(col, "siro.weight", icon='FILE_VOLUME')
         _aviso(layout, "La pieza activa recibe el resultado", 'RESTRICT_SELECT_OFF')
 
 
