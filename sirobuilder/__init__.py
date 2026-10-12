@@ -7,7 +7,6 @@ from .operators import (
     cut,
     depthmap_relief,
     extrude_down,
-    ghost_preview,
     group,
     mirror,
     repair,
@@ -79,11 +78,9 @@ def register():
     iconos.register()
     camera_nav.register_keymap()
     group.register_handler()
-    ghost_preview.register_driver_function()
 
 
 def unregister():
-    ghost_preview.unregister_driver_function()
     overlay.remove_handler()
     select_mark.disable()
     camera_nav.unregister_keymap()

@@ -1,34 +1,43 @@
 """Vista previa "fantasma" del corte, estilo Microsoft 3D Builder.
 
 El lado que se conserva se ve con el material original de la pieza; el lado
-que se descarta se ve como un fantasma blanco translúcido. Todo ocurre en la
-GPU vía un modificador de Geometry Nodes: por cada cara calcula en qué lado
-del plano cae (mismo cálculo que usa siro.cut al cortar de verdad, en espacio
-local de la pieza) y le asigna el slot de material correspondiente. El
-modificador NUNCA toca target.data — es 100% no-destructivo y desaparece sin
-dejar rastro con remove_ghost_preview().
+que se descarta se ve como un fantasma blanco translúcido. Todo ocurre en un
+modificador de Geometry Nodes: por cada cara calcula en qué lado del plano
+cae (mismo cálculo que usa siro.cut al cortar de verdad) y le asigna el slot
+de material correspondiente. El modificador NUNCA toca target.data — es 100%
+no-destructivo y desaparece sin dejar rastro con remove_ghost_preview().
 
-La transform del plano llega al modificador vía drivers (no un handler de
-Python corriendo cada frame): los drivers solo se re-evalúan cuando el plano o
-la pieza se mueven/rotan, y la función que llaman recalcula la co/normal del
-plano en espacio local de la pieza igual que _cut_mesh en cut.py.
+Fase 1 (v0.26.0): SIN drivers ni Python en el camino. El objeto del plano
+(SiroCutter) entra al modificador como un input de tipo Objeto y el propio
+node group lee su transform con Object Info. Antes, seis drivers llamaban a
+una función propia registrada en `bpy.app.driver_namespace`, y eso dependía
+de que *Auto Run Python Scripts* estuviera activo, de que un handler
+`load_post` la repusiera al abrir archivos y de la ruta de propiedades de
+cada versión de Blender. Ahora el fantasma funciona igual con la
+auto-ejecución desactivada, con el addon deshabilitado y al abrir cualquier
+.blend.
 
-Nota: los drivers dependen de que el addon esté registrado (register()
-inyecta la función en bpy.app.driver_namespace). Si se abre un .blend con el
-addon deshabilitado, el modificador queda ahí pero sin efecto hasta reactivarlo.
+Qué calcula el node group, todo en espacio MUNDO (igual que cut.py):
+    co_plano  = M_plano · (0,0,0)
+    no_plano  = normalizar(M_plano · (0,0,1) − M_plano · (0,0,0))
+    pos_cara  = M_pieza · centro_de_la_cara
+    fantasma  = dot(pos_cara − co_plano, no_plano) < 0
 """
 
 import bpy
-from bpy.app.handlers import persistent
-from mathutils import Vector
 
 NODEGROUP_NAME = "SiroGhostPreview"
 MODIFIER_NAME = "SiroGhostPreview"
 GHOST_MAT_NAME = "SiroGhostFantasma"
 CUTTER_NAME = "SiroCutter"
 
-_DRIVER_NS_KEY = "siro_ghost_plane_component"
 _ADDED_BASE_SLOT_KEY = "siro_ghost_added_base_slot"
+
+# Alfa del fantasma en Solid y en Material Preview. Subido de 0.12 a 0.25: a
+# 0.12 sobre un fondo claro casi no se distinguía del fondo (hipótesis 4 del
+# plan). Solo aplica a materiales NUEVOS; si ya existe SiroGhostFantasma en el
+# archivo, se respeta el valor que tenga.
+GHOST_ALPHA = 0.25
 
 
 def ghost_target():
@@ -40,68 +49,17 @@ def ghost_target():
     return None
 
 
-def _plane_component(kind, axis):
-    """Componente (0/1/2) de la co. o normal del plano de corte, en espacio
-    MUNDO. La llaman los drivers; con clear_inner=True en _cut_mesh,
-    dot(pos - co, normal) < 0 es el lado que se descarta.
-
-    Depende SOLO del plano, nunca de la pieza: un driver que lee la transform
-    del objeto que lo lleva no se re-evalúa a tiempo (el depsgraph no puede
-    ordenarlo contra sí mismo) y el preview quedaba retrasado o congelado. La
-    transform de la pieza la aplica el propio node group con Self Object.
-
-    Tampoco recibe nombres: guardarlos como texto en la expresión mataba el
-    preview en silencio en cuanto la pieza se renombraba (o Blender le
-    agregaba un .001)."""
-    cutter = bpy.data.objects.get(CUTTER_NAME)
-    if cutter is None:
-        return 0.0
-    if kind == 'CO':
-        return cutter.matrix_world.translation[axis]
-    return (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()[axis]
-
-
-@persistent
-def _reponer_driver(_archivo):
-    """Blender VACÍA `driver_namespace` cada vez que carga un .blend.
-
-    Inyectarla solo en register() no alcanza: register() corre una vez al
-    arrancar, y en cuanto se abre un archivo la función desaparece aunque el
-    addon siga perfectamente habilitado. Los seis drivers del fantasma quedan
-    `is_valid: False`, los sockets del modificador se quedan en cero, y con la
-    normal del plano en (0,0,0) el producto punto da 0 — que no es `< 0`, así
-    que ninguna cara se marca y el fantasma no aparece. Medido en la sesión de
-    Leo con una pieza real: 0 caras fantasma de 250 185.
-
-    Tiene que ser `@persistent`, o el propio handler se borraría en la primera
-    carga y solo arreglaría el primer archivo.
-    """
-    bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
-
-
-def register_driver_function():
-    bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
-    if _reponer_driver not in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.append(_reponer_driver)
-
-
-def unregister_driver_function():
-    bpy.app.driver_namespace.pop(_DRIVER_NS_KEY, None)
-    if _reponer_driver in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(_reponer_driver)
-
-
 def _ghost_material():
     """Blanco translúcido — el "fantasma" del lado que se descarta"""
     mat = bpy.data.materials.get(GHOST_MAT_NAME)
     if mat is None:
         mat = bpy.data.materials.new(GHOST_MAT_NAME)
-        mat.diffuse_color = (1.0, 1.0, 1.0, 0.12)
+        mat.diffuse_color = (1.0, 1.0, 1.0, GHOST_ALPHA)  # color en Solid
         mat.use_nodes = True
         bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
         if bsdf is not None:
             bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-            bsdf.inputs["Alpha"].default_value = 0.12
+            bsdf.inputs["Alpha"].default_value = GHOST_ALPHA
             if "Roughness" in bsdf.inputs:
                 bsdf.inputs["Roughness"].default_value = 0.6
         if hasattr(mat, "surface_render_method"):
@@ -116,15 +74,9 @@ def _socket_identifier(group, name, in_out='INPUT'):
     raise KeyError(f"Socket '{name}' no encontrado en {group.name}")
 
 
-# Entradas del modificador de nodos. Blender 5.2 las movió de mod["Socket_N"] (propiedad
-# propia del modificador, que ya no acepta) a mod.properties.inputs.Socket_N.value; los
-# drivers se cuelgan del objeto con esa ruta. Hasta 5.1, la forma vieja.
-def _input_path(mod, socket_id):
-    if hasattr(mod, "properties"):
-        return f'modifiers["{mod.name}"].properties.inputs.{socket_id}.value'
-    return f'modifiers["{mod.name}"]["{socket_id}"]'
-
-
+# Entradas del modificador de nodos. Blender 5.2 las movió de mod["Socket_N"]
+# (propiedad propia del modificador, que ya no acepta) a
+# mod.properties.inputs.Socket_N.value. Hasta 5.1, la forma vieja.
 def _set_input(mod, socket_id, value):
     if hasattr(mod, "properties"):
         getattr(mod.properties.inputs, socket_id).value = value
@@ -133,19 +85,21 @@ def _set_input(mod, socket_id, value):
 
 
 def _build_node_group():
-    """Geometry: por cara, dot(pos_mundo - Plane Co, Plane No) < 0 → slot fantasma"""
+    """Geometry: por cara, dot(pos_mundo − co_plano, no_plano) < 0 → slot fantasma"""
     group = bpy.data.node_groups.get(NODEGROUP_NAME)
     if group is not None:
-        if any(n.bl_idname == 'GeometryNodeSelfObject' for n in group.nodes):
+        # versión actual = tiene el input "Cutter" (objeto). Las anteriores
+        # recibían Plane Co / Plane No por drivers: se reconstruye.
+        try:
+            _socket_identifier(group, "Cutter")
             return group
-        # versión vieja (comparaba en espacio local): se reconstruye
-        bpy.data.node_groups.remove(group)
+        except KeyError:
+            bpy.data.node_groups.remove(group)
 
     group = bpy.data.node_groups.new(NODEGROUP_NAME, 'GeometryNodeTree')
     iface = group.interface
     iface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
-    iface.new_socket(name="Plane Co", in_out='INPUT', socket_type='NodeSocketVector')
-    iface.new_socket(name="Plane No", in_out='INPUT', socket_type='NodeSocketVector')
+    iface.new_socket(name="Cutter", in_out='INPUT', socket_type='NodeSocketObject')
     iface.new_socket(name="Ghost Slot", in_out='INPUT', socket_type='NodeSocketInt')
     iface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
 
@@ -153,79 +107,82 @@ def _build_node_group():
     links = group.links
 
     n_in = nodes.new('NodeGroupInput')
-    n_in.location = (-680, 0)
+    n_in.location = (-1100, 0)
     n_out = nodes.new('NodeGroupOutput')
-    n_out.location = (300, 0)
+    n_out.location = (500, 0)
 
+    # --- transform del PLANO (el objeto que llega por el input "Cutter") ---
+    n_cut_info = nodes.new('GeometryNodeObjectInfo')
+    n_cut_info.location = (-900, 400)
+    n_cut_info.transform_space = 'ORIGINAL'  # matrix_world del objeto
+    links.new(n_in.outputs['Cutter'], n_cut_info.inputs['Object'])
+
+    # punto del plano: M · (0,0,0)
+    n_co = nodes.new('FunctionNodeTransformPoint')
+    n_co.location = (-640, 480)
+    n_co.inputs['Vector'].default_value = (0.0, 0.0, 0.0)
+    links.new(n_cut_info.outputs['Transform'], n_co.inputs['Transform'])
+
+    # normal del plano: M · (0,0,1) − M · (0,0,0), normalizada. Es lo mismo que
+    # `matrix_world.to_3x3() @ (0,0,1)` normalizado de siro.cut.
+    n_tip = nodes.new('FunctionNodeTransformPoint')
+    n_tip.location = (-640, 300)
+    n_tip.inputs['Vector'].default_value = (0.0, 0.0, 1.0)
+    links.new(n_cut_info.outputs['Transform'], n_tip.inputs['Transform'])
+
+    n_dir = nodes.new('ShaderNodeVectorMath')
+    n_dir.operation = 'SUBTRACT'
+    n_dir.location = (-420, 400)
+    links.new(n_tip.outputs['Vector'], n_dir.inputs[0])
+    links.new(n_co.outputs['Vector'], n_dir.inputs[1])
+
+    n_no = nodes.new('ShaderNodeVectorMath')
+    n_no.operation = 'NORMALIZE'
+    n_no.location = (-220, 400)
+    links.new(n_dir.outputs['Vector'], n_no.inputs[0])
+
+    # --- posición de cada cara en espacio MUNDO (transform de la pieza) ---
     n_pos = nodes.new('GeometryNodeInputPosition')
-    n_pos.location = (-680, -260)
-
-    # posición a espacio mundo dentro del propio node group: así el plano llega
-    # en coordenadas de mundo y los drivers no necesitan saber nada de la pieza
+    n_pos.location = (-900, -140)
     n_self = nodes.new('GeometryNodeSelfObject')
-    n_self.location = (-680, -420)
-    n_info = nodes.new('GeometryNodeObjectInfo')
-    n_info.location = (-500, -420)
-    links.new(n_self.outputs['Self Object'], n_info.inputs['Object'])
+    n_self.location = (-900, -300)
+    n_self_info = nodes.new('GeometryNodeObjectInfo')
+    n_self_info.location = (-720, -300)
+    n_self_info.transform_space = 'ORIGINAL'
+    links.new(n_self.outputs['Self Object'], n_self_info.inputs['Object'])
 
     n_world = nodes.new('FunctionNodeTransformPoint')
-    n_world.location = (-300, -300)
+    n_world.location = (-500, -180)
     links.new(n_pos.outputs['Position'], n_world.inputs['Vector'])
-    links.new(n_info.outputs['Transform'], n_world.inputs['Transform'])
+    links.new(n_self_info.outputs['Transform'], n_world.inputs['Transform'])
 
+    # --- dot(pos − co, no) < 0 ---
     n_sub = nodes.new('ShaderNodeVectorMath')
     n_sub.operation = 'SUBTRACT'
-    n_sub.location = (-120, -120)
+    n_sub.location = (-260, -100)
     links.new(n_world.outputs['Vector'], n_sub.inputs[0])
-    links.new(n_in.outputs['Plane Co'], n_sub.inputs[1])
+    links.new(n_co.outputs['Vector'], n_sub.inputs[1])
 
     n_dot = nodes.new('ShaderNodeVectorMath')
     n_dot.operation = 'DOT_PRODUCT'
-    n_dot.location = (-60, -120)
+    n_dot.location = (-60, -100)
     links.new(n_sub.outputs['Vector'], n_dot.inputs[0])
-    links.new(n_in.outputs['Plane No'], n_dot.inputs[1])
+    links.new(n_no.outputs['Vector'], n_dot.inputs[1])
 
     n_lt = nodes.new('ShaderNodeMath')
     n_lt.operation = 'LESS_THAN'
-    n_lt.location = (120, -120)
+    n_lt.location = (140, -100)
     n_lt.inputs[1].default_value = 0.0
     links.new(n_dot.outputs['Value'], n_lt.inputs[0])
 
     n_setmat = nodes.new('GeometryNodeSetMaterialIndex')
-    n_setmat.location = (120, 60)
+    n_setmat.location = (320, 60)
     links.new(n_in.outputs['Geometry'], n_setmat.inputs['Geometry'])
     links.new(n_lt.outputs['Value'], n_setmat.inputs['Selection'])
     links.new(n_in.outputs['Ghost Slot'], n_setmat.inputs['Material Index'])
     links.new(n_setmat.outputs['Geometry'], n_out.inputs['Geometry'])
 
     return group
-
-
-def _add_transform_dep(driver, obj, prefix):
-    """Variables 'mudas' solo para marcar dependencia: el driver se re-evalúa
-    cuando cambian estos canales, aunque la expresión no las nombre — llama
-    directo a la función registrada, que relee matrix_world por su cuenta."""
-    # sin los canales SCALE_*, escalar el plano dejaba el preview congelado
-    canales = ('LOC_X', 'LOC_Y', 'LOC_Z', 'ROT_X', 'ROT_Y', 'ROT_Z',
-               'SCALE_X', 'SCALE_Y', 'SCALE_Z')
-    for i, chan in enumerate(canales):
-        var = driver.variables.new()
-        var.name = f"{prefix}{i}"
-        var.type = 'TRANSFORMS'
-        tgt = var.targets[0]
-        tgt.id = obj
-        tgt.transform_type = chan
-        tgt.transform_space = 'WORLD_SPACE'
-
-
-def _make_driver(mod, socket_id, axis, cutter, kind):
-    fcurve = mod.id_data.driver_add(_input_path(mod, socket_id), axis)
-    drv = fcurve.driver
-    drv.type = 'SCRIPTED'
-    drv.expression = f"{_DRIVER_NS_KEY}('{kind}', {axis})"
-    # solo el plano: depender también de la pieza es lo que rompía el preview
-    # (el driver vive en un modificador de la pieza, no puede depender de ella)
-    _add_transform_dep(drv, cutter, "c")
 
 
 def add_ghost_modifier(target, cutter):
@@ -250,17 +207,20 @@ def add_ghost_modifier(target, cutter):
     # propias en modificadores (TypeError: id properties not supported)
     target[_ADDED_BASE_SLOT_KEY] = added_base_slot
 
-    co_id = _socket_identifier(group, "Plane Co")
-    no_id = _socket_identifier(group, "Plane No")
-    slot_id = _socket_identifier(group, "Ghost Slot")
+    _set_input(mod, _socket_identifier(group, "Cutter"), cutter)
+    _set_input(mod, _socket_identifier(group, "Ghost Slot"), ghost_index)
 
-    _set_input(mod, co_id, (0.0, 0.0, 0.0))
-    _set_input(mod, no_id, (0.0, 0.0, 1.0))
-    _set_input(mod, slot_id, ghost_index)
 
-    for axis in range(3):
-        _make_driver(mod, co_id, axis, cutter, 'CO')
-        _make_driver(mod, no_id, axis, cutter, 'NO')
+def _quitar_drivers_viejos(obj):
+    """Archivos guardados con versiones <= 0.25.1 traen seis drivers sobre las
+    entradas del modificador fantasma. Se borran por ruta, sin depender de que
+    el node group viejo siga existiendo."""
+    ad = obj.animation_data
+    if ad is None:
+        return
+    for fc in list(ad.drivers):
+        if MODIFIER_NAME in fc.data_path:
+            ad.drivers.remove(fc)
 
 
 def remove_ghost_preview(obj):
@@ -270,21 +230,8 @@ def remove_ghost_preview(obj):
     added_base_slot = False
     if mod is not None:
         added_base_slot = bool(obj.get(_ADDED_BASE_SLOT_KEY, False))
-        group = mod.node_group
-        if group is not None:
-            # quitar los drivers antes de borrar el modificador: driver_add()
-            # los guarda en el animation_data del objeto, no "dentro" del
-            # modificador, así que si no los sacamos primero quedan huérfanos
-            # apuntando a una ruta que ya no existe
-            try:
-                co_id = _socket_identifier(group, "Plane Co")
-                no_id = _socket_identifier(group, "Plane No")
-                for axis in range(3):
-                    obj.driver_remove(_input_path(mod, co_id), axis)
-                    obj.driver_remove(_input_path(mod, no_id), axis)
-            except KeyError:
-                pass
         obj.modifiers.remove(mod)
+    _quitar_drivers_viejos(obj)
     if _ADDED_BASE_SLOT_KEY in obj:
         del obj[_ADDED_BASE_SLOT_KEY]
 

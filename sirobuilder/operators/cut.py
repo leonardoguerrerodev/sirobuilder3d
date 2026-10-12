@@ -50,6 +50,23 @@ def _cutter_material():
     return mat
 
 
+def _agregar_flecha(cutter, size):
+    """Cono sobre el centro del plano apuntando a +Z (la normal): marca el lado
+    que se CONSERVA. Es geometría del propio plano, así que no hay nada extra
+    que limpiar. El corte solo usa la transform del plano, no su malla."""
+    bm = bmesh.new()
+    bm.from_mesh(cutter.data)
+    alto = size * 0.16
+    res = bmesh.ops.create_cone(
+        bm, cap_ends=True, cap_tris=True, segments=16,
+        radius1=size * 0.04, radius2=0.0, depth=alto,
+    )
+    bmesh.ops.translate(bm, vec=(0.0, 0.0, alto / 2.0), verts=res["verts"])
+    bm.to_mesh(cutter.data)
+    bm.free()
+    cutter.data.update()
+
+
 class SIRO_OT_add_cut_plane(bpy.types.Operator):
     """Añade el plano de corte sobre la pieza activa; muévelo/rótalo (G/R) y pulsa Cortar"""
     bl_idname = "siro.add_cut_plane"
@@ -76,6 +93,7 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
         cutter.name = CUTTER_NAME
         cutter.show_in_front = True
         cutter.show_transparent = True  # si no, Solid pinta el plano opaco
+        _agregar_flecha(cutter, size)
         cutter.data.materials.append(_cutter_material())
         cutter.color = (0.2, 0.9, 0.3, 0.5)
         cutter["siro_target"] = target.name

@@ -19,6 +19,7 @@ El panel aparece en el N-panel del viewport, pestaña **SiroBuilder**.
 ```bash
 blender -b -P test_clip_plane.py
 blender -b -P test_tools.py
+blender -b -P tests/test_ghost_fase1.py
 ```
 
 ## Estado
@@ -262,6 +263,7 @@ blender -b -P test_tools.py
   El arreglo es una lista explícita, `_PROPS_DE_CONTEXTO` = `location`, `rotation`, `scale`, `align`: las que Blender rellena desde el contexto en su `invoke` (cursor 3D, orientación de la vista) y donde el default es un centinela, no un valor. `_boton` sigue reseteando todo lo demás, que es para lo que existe.
 
   **Y el test tenía el mismo agujero de siempre:** llamaba al operador directo con `**props`, esquivando `_boton` — el camino que el usuario nunca recorre. Ahora pasa por las propiedades reseteadas de verdad, y además fija el centinela: si `scale=(0,0,0)` dejara de colapsar la primitiva en una versión futura de Blender, el test avisa para revisar si la exclusión sigue haciendo falta.
+- 🧪 **v0.26.0 — el fantasma del corte ya no depende de Python.** Fase 1 de `PLAN_plano_de_corte_fantasma.md`. El plano (`SiroCutter`) entra al modificador de Geometry Nodes como input de tipo **Objeto** y el propio node group lee su transform con *Object Info* y calcula punto y normal en espacio mundo. Se eliminan los seis drivers, la función en `bpy.app.driver_namespace` y el handler `load_post`: el fantasma funciona con *Auto Run Python Scripts* desactivado, con el addon deshabilitado y al abrir cualquier `.blend`. Los archivos guardados con ≤ 0.25.1 se limpian solos (los drivers viejos se borran por ruta al añadir un plano nuevo). Además: el plano lleva una **flecha de normal** (un cono hacia +Z) que marca el lado que se conserva, y el alfa del fantasma sube de 0,12 a 0,25 en materiales nuevos. Test: `tests/test_ghost_fase1.py` — pasa con esta versión y **falla** con `702c029` (ver instrucciones en el propio archivo). Pendiente de verificar a ojo en un viewport 5.2 real; los tests son headless.
 - ⬜ Fase 4 (nice to have): vaciar/cascarón (FDM), texto 3D de un clic.
 
 ## Ideas para el futuro
