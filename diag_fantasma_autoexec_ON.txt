@@ -1,0 +1,39 @@
+======================================================================
+Blender 5.2.0 LTS
+Auto Run Python Scripts: ON
+funcion en driver_namespace: True
+======================================================================
+
+[A] Sesion nueva (el addon acaba de crear el plano)
+  plano en el origen, normal +Z      fantasma 4096/8192 = 50%  [OK: esperado ~50%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 0.0), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+  plano z=+0.5 (esperado ~75% fantasma) fantasma 5504/8192 = 67%  [OK: esperado ~75%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 0.5), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+  plano z=-0.5 (esperado ~25% fantasma) fantasma 2688/8192 = 33%  [OK: esperado ~25%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, -0.5), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+  plano girado 90 grados en X        fantasma 4096/8192 = 50%  [OK: esperado ~50%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 0.0), 'Plane No': (0.0, -1.0, -0.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+
+[B] Controles (deben dar 100% y 0%: prueban que el contador reacciona)
+  plano muy arriba (z=+100)          fantasma 8192/8192 = 100%  [OK: esperado ~100%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 100.0), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+  plano muy abajo (z=-100)           fantasma 0/8192 = 0%  [OK: esperado ~0%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, -100.0), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+
+[C] Guardar y reabrir el .blend (el caso real: abrir tu archivo)
+funcion en driver_namespace tras reabrir: True
+handler load_post presente: True
+  tras reabrir, plano z=+0.5 (~75%)  fantasma 5504/8192 = 67%  [OK: esperado ~75%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 0.5), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos
+
+[D] Si [C] falla: simular que el handler repone la funcion
+  tras reponer la funcion a mano     fantasma 5504/8192 = 67%  [OK: esperado ~75%]
+      inputs del modificador: {'Plane Co': (0.0, 0.0, 0.5), 'Plane No': (0.0, 0.0, 1.0), 'Ghost Slot': 1}
+      6/6 drivers validos

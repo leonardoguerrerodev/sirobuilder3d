@@ -1,0 +1,2 @@
+### 0. Comprobaciones previas
+El codigo ya no es el viejo (no tiene register_driver_function): el parche parece aplicado.

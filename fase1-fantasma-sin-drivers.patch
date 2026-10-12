@@ -1,0 +1,668 @@
+From ddded1883a388c627541a9701c143621f10dfee6 Mon Sep 17 00:00:00 2001
+From: Leo <leonardo.gm.dev@gmail.com>
+Date: Mon, 12 Oct 2026 23:18:41 +0000
+Subject: [PATCH] v0.26.0: fantasma del corte sin drivers (Fase 1)
+
+El plano entra al modificador de Geometry Nodes como input Objeto y el node
+group lee su transform con Object Info. Se eliminan drivers, driver_namespace
+y el handler load_post. Flecha de normal en el plano, alfa del fantasma 0.25,
+limpieza de drivers viejos y tests/test_ghost_fase1.py.
+---
+ README.md                              |   2 +
+ sirobuilder/__init__.py                |   3 -
+ sirobuilder/blender_manifest.toml      |   2 +-
+ sirobuilder/operators/cut.py           |  18 ++
+ sirobuilder/operators/ghost_preview.py | 257 ++++++++++---------------
+ tests/test_ghost_fase1.py              | 179 +++++++++++++++++
+ 6 files changed, 302 insertions(+), 159 deletions(-)
+ create mode 100644 tests/test_ghost_fase1.py
+
+diff --git a/README.md b/README.md
+index cf91d2d..a5650b6 100644
+--- a/README.md
++++ b/README.md
+@@ -19,6 +19,7 @@ El panel aparece en el N-panel del viewport, pestaña **SiroBuilder**.
+ ```bash
+ blender -b -P test_clip_plane.py
+ blender -b -P test_tools.py
++blender -b -P tests/test_ghost_fase1.py
+ ```
+ 
+ ## Estado
+@@ -262,6 +263,7 @@ blender -b -P test_tools.py
+   El arreglo es una lista explícita, `_PROPS_DE_CONTEXTO` = `location`, `rotation`, `scale`, `align`: las que Blender rellena desde el contexto en su `invoke` (cursor 3D, orientación de la vista) y donde el default es un centinela, no un valor. `_boton` sigue reseteando todo lo demás, que es para lo que existe.
+ 
+   **Y el test tenía el mismo agujero de siempre:** llamaba al operador directo con `**props`, esquivando `_boton` — el camino que el usuario nunca recorre. Ahora pasa por las propiedades reseteadas de verdad, y además fija el centinela: si `scale=(0,0,0)` dejara de colapsar la primitiva en una versión futura de Blender, el test avisa para revisar si la exclusión sigue haciendo falta.
++- 🧪 **v0.26.0 — el fantasma del corte ya no depende de Python.** Fase 1 de `PLAN_plano_de_corte_fantasma.md`. El plano (`SiroCutter`) entra al modificador de Geometry Nodes como input de tipo **Objeto** y el propio node group lee su transform con *Object Info* y calcula punto y normal en espacio mundo. Se eliminan los seis drivers, la función en `bpy.app.driver_namespace` y el handler `load_post`: el fantasma funciona con *Auto Run Python Scripts* desactivado, con el addon deshabilitado y al abrir cualquier `.blend`. Los archivos guardados con ≤ 0.25.1 se limpian solos (los drivers viejos se borran por ruta al añadir un plano nuevo). Además: el plano lleva una **flecha de normal** (un cono hacia +Z) que marca el lado que se conserva, y el alfa del fantasma sube de 0,12 a 0,25 en materiales nuevos. Test: `tests/test_ghost_fase1.py` — pasa con esta versión y **falla** con `702c029` (ver instrucciones en el propio archivo). Pendiente de verificar a ojo en un viewport 5.2 real; los tests son headless.
+ - ⬜ Fase 4 (nice to have): vaciar/cascarón (FDM), texto 3D de un clic.
+ 
+ ## Ideas para el futuro
+diff --git a/sirobuilder/__init__.py b/sirobuilder/__init__.py
+index bd82a6b..e6a662e 100644
+--- a/sirobuilder/__init__.py
++++ b/sirobuilder/__init__.py
+@@ -7,7 +7,6 @@ from .operators import (
+     cut,
+     depthmap_relief,
+     extrude_down,
+-    ghost_preview,
+     group,
+     mirror,
+     repair,
+@@ -79,11 +78,9 @@ def register():
+     iconos.register()
+     camera_nav.register_keymap()
+     group.register_handler()
+-    ghost_preview.register_driver_function()
+ 
+ 
+ def unregister():
+-    ghost_preview.unregister_driver_function()
+     overlay.remove_handler()
+     select_mark.disable()
+     camera_nav.unregister_keymap()
+diff --git a/sirobuilder/blender_manifest.toml b/sirobuilder/blender_manifest.toml
+index 1a25776..b22b202 100644
+--- a/sirobuilder/blender_manifest.toml
++++ b/sirobuilder/blender_manifest.toml
+@@ -1,7 +1,7 @@
+ schema_version = "1.0.0"
+ 
+ id = "sirobuilder"
+-version = "0.25.1"
++version = "0.26.0"
+ name = "SiroBuilder"
+ tagline = "Herramientas estilo 3D Builder para preparar piezas de joyeria"
+ maintainer = "Leo <leonardo.gm.dev@gmail.com>"
+diff --git a/sirobuilder/operators/cut.py b/sirobuilder/operators/cut.py
+index b985d79..6afc6a5 100644
+--- a/sirobuilder/operators/cut.py
++++ b/sirobuilder/operators/cut.py
+@@ -50,6 +50,23 @@ def _cutter_material():
+     return mat
+ 
+ 
++def _agregar_flecha(cutter, size):
++    """Cono sobre el centro del plano apuntando a +Z (la normal): marca el lado
++    que se CONSERVA. Es geometría del propio plano, así que no hay nada extra
++    que limpiar. El corte solo usa la transform del plano, no su malla."""
++    bm = bmesh.new()
++    bm.from_mesh(cutter.data)
++    alto = size * 0.16
++    res = bmesh.ops.create_cone(
++        bm, cap_ends=True, cap_tris=True, segments=16,
++        radius1=size * 0.04, radius2=0.0, depth=alto,
++    )
++    bmesh.ops.translate(bm, vec=(0.0, 0.0, alto / 2.0), verts=res["verts"])
++    bm.to_mesh(cutter.data)
++    bm.free()
++    cutter.data.update()
++
++
+ class SIRO_OT_add_cut_plane(bpy.types.Operator):
+     """Añade el plano de corte sobre la pieza activa; muévelo/rótalo (G/R) y pulsa Cortar"""
+     bl_idname = "siro.add_cut_plane"
+@@ -76,6 +93,7 @@ class SIRO_OT_add_cut_plane(bpy.types.Operator):
+         cutter.name = CUTTER_NAME
+         cutter.show_in_front = True
+         cutter.show_transparent = True  # si no, Solid pinta el plano opaco
++        _agregar_flecha(cutter, size)
+         cutter.data.materials.append(_cutter_material())
+         cutter.color = (0.2, 0.9, 0.3, 0.5)
+         cutter["siro_target"] = target.name
+diff --git a/sirobuilder/operators/ghost_preview.py b/sirobuilder/operators/ghost_preview.py
+index d7ebfa5..57dba4b 100644
+--- a/sirobuilder/operators/ghost_preview.py
++++ b/sirobuilder/operators/ghost_preview.py
+@@ -1,35 +1,44 @@
+ """Vista previa "fantasma" del corte, estilo Microsoft 3D Builder.
+ 
+ El lado que se conserva se ve con el material original de la pieza; el lado
+-que se descarta se ve como un fantasma blanco translúcido. Todo ocurre en la
+-GPU vía un modificador de Geometry Nodes: por cada cara calcula en qué lado
+-del plano cae (mismo cálculo que usa siro.cut al cortar de verdad, en espacio
+-local de la pieza) y le asigna el slot de material correspondiente. El
+-modificador NUNCA toca target.data — es 100% no-destructivo y desaparece sin
+-dejar rastro con remove_ghost_preview().
+-
+-La transform del plano llega al modificador vía drivers (no un handler de
+-Python corriendo cada frame): los drivers solo se re-evalúan cuando el plano o
+-la pieza se mueven/rotan, y la función que llaman recalcula la co/normal del
+-plano en espacio local de la pieza igual que _cut_mesh en cut.py.
+-
+-Nota: los drivers dependen de que el addon esté registrado (register()
+-inyecta la función en bpy.app.driver_namespace). Si se abre un .blend con el
+-addon deshabilitado, el modificador queda ahí pero sin efecto hasta reactivarlo.
++que se descarta se ve como un fantasma blanco translúcido. Todo ocurre en un
++modificador de Geometry Nodes: por cada cara calcula en qué lado del plano
++cae (mismo cálculo que usa siro.cut al cortar de verdad) y le asigna el slot
++de material correspondiente. El modificador NUNCA toca target.data — es 100%
++no-destructivo y desaparece sin dejar rastro con remove_ghost_preview().
++
++Fase 1 (v0.26.0): SIN drivers ni Python en el camino. El objeto del plano
++(SiroCutter) entra al modificador como un input de tipo Objeto y el propio
++node group lee su transform con Object Info. Antes, seis drivers llamaban a
++una función propia registrada en `bpy.app.driver_namespace`, y eso dependía
++de que *Auto Run Python Scripts* estuviera activo, de que un handler
++`load_post` la repusiera al abrir archivos y de la ruta de propiedades de
++cada versión de Blender. Ahora el fantasma funciona igual con la
++auto-ejecución desactivada, con el addon deshabilitado y al abrir cualquier
++.blend.
++
++Qué calcula el node group, todo en espacio MUNDO (igual que cut.py):
++    co_plano  = M_plano · (0,0,0)
++    no_plano  = normalizar(M_plano · (0,0,1) − M_plano · (0,0,0))
++    pos_cara  = M_pieza · centro_de_la_cara
++    fantasma  = dot(pos_cara − co_plano, no_plano) < 0
+ """
+ 
+ import bpy
+-from bpy.app.handlers import persistent
+-from mathutils import Vector
+ 
+ NODEGROUP_NAME = "SiroGhostPreview"
+ MODIFIER_NAME = "SiroGhostPreview"
+ GHOST_MAT_NAME = "SiroGhostFantasma"
+ CUTTER_NAME = "SiroCutter"
+ 
+-_DRIVER_NS_KEY = "siro_ghost_plane_component"
+ _ADDED_BASE_SLOT_KEY = "siro_ghost_added_base_slot"
+ 
++# Alfa del fantasma en Solid y en Material Preview. Subido de 0.12 a 0.25: a
++# 0.12 sobre un fondo claro casi no se distinguía del fondo (hipótesis 4 del
++# plan). Solo aplica a materiales NUEVOS; si ya existe SiroGhostFantasma en el
++# archivo, se respeta el valor que tenga.
++GHOST_ALPHA = 0.25
++
+ 
+ def ghost_target():
+     """La pieza que tiene el preview puesto. Solo hay una: add_cut_plane llama
+@@ -40,68 +49,17 @@ def ghost_target():
+     return None
+ 
+ 
+-def _plane_component(kind, axis):
+-    """Componente (0/1/2) de la co. o normal del plano de corte, en espacio
+-    MUNDO. La llaman los drivers; con clear_inner=True en _cut_mesh,
+-    dot(pos - co, normal) < 0 es el lado que se descarta.
+-
+-    Depende SOLO del plano, nunca de la pieza: un driver que lee la transform
+-    del objeto que lo lleva no se re-evalúa a tiempo (el depsgraph no puede
+-    ordenarlo contra sí mismo) y el preview quedaba retrasado o congelado. La
+-    transform de la pieza la aplica el propio node group con Self Object.
+-
+-    Tampoco recibe nombres: guardarlos como texto en la expresión mataba el
+-    preview en silencio en cuanto la pieza se renombraba (o Blender le
+-    agregaba un .001)."""
+-    cutter = bpy.data.objects.get(CUTTER_NAME)
+-    if cutter is None:
+-        return 0.0
+-    if kind == 'CO':
+-        return cutter.matrix_world.translation[axis]
+-    return (cutter.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()[axis]
+-
+-
+-@persistent
+-def _reponer_driver(_archivo):
+-    """Blender VACÍA `driver_namespace` cada vez que carga un .blend.
+-
+-    Inyectarla solo en register() no alcanza: register() corre una vez al
+-    arrancar, y en cuanto se abre un archivo la función desaparece aunque el
+-    addon siga perfectamente habilitado. Los seis drivers del fantasma quedan
+-    `is_valid: False`, los sockets del modificador se quedan en cero, y con la
+-    normal del plano en (0,0,0) el producto punto da 0 — que no es `< 0`, así
+-    que ninguna cara se marca y el fantasma no aparece. Medido en la sesión de
+-    Leo con una pieza real: 0 caras fantasma de 250 185.
+-
+-    Tiene que ser `@persistent`, o el propio handler se borraría en la primera
+-    carga y solo arreglaría el primer archivo.
+-    """
+-    bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
+-
+-
+-def register_driver_function():
+-    bpy.app.driver_namespace[_DRIVER_NS_KEY] = _plane_component
+-    if _reponer_driver not in bpy.app.handlers.load_post:
+-        bpy.app.handlers.load_post.append(_reponer_driver)
+-
+-
+-def unregister_driver_function():
+-    bpy.app.driver_namespace.pop(_DRIVER_NS_KEY, None)
+-    if _reponer_driver in bpy.app.handlers.load_post:
+-        bpy.app.handlers.load_post.remove(_reponer_driver)
+-
+-
+ def _ghost_material():
+     """Blanco translúcido — el "fantasma" del lado que se descarta"""
+     mat = bpy.data.materials.get(GHOST_MAT_NAME)
+     if mat is None:
+         mat = bpy.data.materials.new(GHOST_MAT_NAME)
+-        mat.diffuse_color = (1.0, 1.0, 1.0, 0.12)
++        mat.diffuse_color = (1.0, 1.0, 1.0, GHOST_ALPHA)  # color en Solid
+         mat.use_nodes = True
+         bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+         if bsdf is not None:
+             bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+-            bsdf.inputs["Alpha"].default_value = 0.12
++            bsdf.inputs["Alpha"].default_value = GHOST_ALPHA
+             if "Roughness" in bsdf.inputs:
+                 bsdf.inputs["Roughness"].default_value = 0.6
+         if hasattr(mat, "surface_render_method"):
+@@ -116,15 +74,9 @@ def _socket_identifier(group, name, in_out='INPUT'):
+     raise KeyError(f"Socket '{name}' no encontrado en {group.name}")
+ 
+ 
+-# Entradas del modificador de nodos. Blender 5.2 las movió de mod["Socket_N"] (propiedad
+-# propia del modificador, que ya no acepta) a mod.properties.inputs.Socket_N.value; los
+-# drivers se cuelgan del objeto con esa ruta. Hasta 5.1, la forma vieja.
+-def _input_path(mod, socket_id):
+-    if hasattr(mod, "properties"):
+-        return f'modifiers["{mod.name}"].properties.inputs.{socket_id}.value'
+-    return f'modifiers["{mod.name}"]["{socket_id}"]'
+-
+-
++# Entradas del modificador de nodos. Blender 5.2 las movió de mod["Socket_N"]
++# (propiedad propia del modificador, que ya no acepta) a
++# mod.properties.inputs.Socket_N.value. Hasta 5.1, la forma vieja.
+ def _set_input(mod, socket_id, value):
+     if hasattr(mod, "properties"):
+         getattr(mod.properties.inputs, socket_id).value = value
+@@ -133,19 +85,21 @@ def _set_input(mod, socket_id, value):
+ 
+ 
+ def _build_node_group():
+-    """Geometry: por cara, dot(pos_mundo - Plane Co, Plane No) < 0 → slot fantasma"""
++    """Geometry: por cara, dot(pos_mundo − co_plano, no_plano) < 0 → slot fantasma"""
+     group = bpy.data.node_groups.get(NODEGROUP_NAME)
+     if group is not None:
+-        if any(n.bl_idname == 'GeometryNodeSelfObject' for n in group.nodes):
++        # versión actual = tiene el input "Cutter" (objeto). Las anteriores
++        # recibían Plane Co / Plane No por drivers: se reconstruye.
++        try:
++            _socket_identifier(group, "Cutter")
+             return group
+-        # versión vieja (comparaba en espacio local): se reconstruye
+-        bpy.data.node_groups.remove(group)
++        except KeyError:
++            bpy.data.node_groups.remove(group)
+ 
+     group = bpy.data.node_groups.new(NODEGROUP_NAME, 'GeometryNodeTree')
+     iface = group.interface
+     iface.new_socket(name="Geometry", in_out='INPUT', socket_type='NodeSocketGeometry')
+-    iface.new_socket(name="Plane Co", in_out='INPUT', socket_type='NodeSocketVector')
+-    iface.new_socket(name="Plane No", in_out='INPUT', socket_type='NodeSocketVector')
++    iface.new_socket(name="Cutter", in_out='INPUT', socket_type='NodeSocketObject')
+     iface.new_socket(name="Ghost Slot", in_out='INPUT', socket_type='NodeSocketInt')
+     iface.new_socket(name="Geometry", in_out='OUTPUT', socket_type='NodeSocketGeometry')
+ 
+@@ -153,46 +107,76 @@ def _build_node_group():
+     links = group.links
+ 
+     n_in = nodes.new('NodeGroupInput')
+-    n_in.location = (-680, 0)
++    n_in.location = (-1100, 0)
+     n_out = nodes.new('NodeGroupOutput')
+-    n_out.location = (300, 0)
+-
++    n_out.location = (500, 0)
++
++    # --- transform del PLANO (el objeto que llega por el input "Cutter") ---
++    n_cut_info = nodes.new('GeometryNodeObjectInfo')
++    n_cut_info.location = (-900, 400)
++    n_cut_info.transform_space = 'ORIGINAL'  # matrix_world del objeto
++    links.new(n_in.outputs['Cutter'], n_cut_info.inputs['Object'])
++
++    # punto del plano: M · (0,0,0)
++    n_co = nodes.new('FunctionNodeTransformPoint')
++    n_co.location = (-640, 480)
++    n_co.inputs['Vector'].default_value = (0.0, 0.0, 0.0)
++    links.new(n_cut_info.outputs['Transform'], n_co.inputs['Transform'])
++
++    # normal del plano: M · (0,0,1) − M · (0,0,0), normalizada. Es lo mismo que
++    # `matrix_world.to_3x3() @ (0,0,1)` normalizado de siro.cut.
++    n_tip = nodes.new('FunctionNodeTransformPoint')
++    n_tip.location = (-640, 300)
++    n_tip.inputs['Vector'].default_value = (0.0, 0.0, 1.0)
++    links.new(n_cut_info.outputs['Transform'], n_tip.inputs['Transform'])
++
++    n_dir = nodes.new('ShaderNodeVectorMath')
++    n_dir.operation = 'SUBTRACT'
++    n_dir.location = (-420, 400)
++    links.new(n_tip.outputs['Vector'], n_dir.inputs[0])
++    links.new(n_co.outputs['Vector'], n_dir.inputs[1])
++
++    n_no = nodes.new('ShaderNodeVectorMath')
++    n_no.operation = 'NORMALIZE'
++    n_no.location = (-220, 400)
++    links.new(n_dir.outputs['Vector'], n_no.inputs[0])
++
++    # --- posición de cada cara en espacio MUNDO (transform de la pieza) ---
+     n_pos = nodes.new('GeometryNodeInputPosition')
+-    n_pos.location = (-680, -260)
+-
+-    # posición a espacio mundo dentro del propio node group: así el plano llega
+-    # en coordenadas de mundo y los drivers no necesitan saber nada de la pieza
++    n_pos.location = (-900, -140)
+     n_self = nodes.new('GeometryNodeSelfObject')
+-    n_self.location = (-680, -420)
+-    n_info = nodes.new('GeometryNodeObjectInfo')
+-    n_info.location = (-500, -420)
+-    links.new(n_self.outputs['Self Object'], n_info.inputs['Object'])
++    n_self.location = (-900, -300)
++    n_self_info = nodes.new('GeometryNodeObjectInfo')
++    n_self_info.location = (-720, -300)
++    n_self_info.transform_space = 'ORIGINAL'
++    links.new(n_self.outputs['Self Object'], n_self_info.inputs['Object'])
+ 
+     n_world = nodes.new('FunctionNodeTransformPoint')
+-    n_world.location = (-300, -300)
++    n_world.location = (-500, -180)
+     links.new(n_pos.outputs['Position'], n_world.inputs['Vector'])
+-    links.new(n_info.outputs['Transform'], n_world.inputs['Transform'])
++    links.new(n_self_info.outputs['Transform'], n_world.inputs['Transform'])
+ 
++    # --- dot(pos − co, no) < 0 ---
+     n_sub = nodes.new('ShaderNodeVectorMath')
+     n_sub.operation = 'SUBTRACT'
+-    n_sub.location = (-120, -120)
++    n_sub.location = (-260, -100)
+     links.new(n_world.outputs['Vector'], n_sub.inputs[0])
+-    links.new(n_in.outputs['Plane Co'], n_sub.inputs[1])
++    links.new(n_co.outputs['Vector'], n_sub.inputs[1])
+ 
+     n_dot = nodes.new('ShaderNodeVectorMath')
+     n_dot.operation = 'DOT_PRODUCT'
+-    n_dot.location = (-60, -120)
++    n_dot.location = (-60, -100)
+     links.new(n_sub.outputs['Vector'], n_dot.inputs[0])
+-    links.new(n_in.outputs['Plane No'], n_dot.inputs[1])
++    links.new(n_no.outputs['Vector'], n_dot.inputs[1])
+ 
+     n_lt = nodes.new('ShaderNodeMath')
+     n_lt.operation = 'LESS_THAN'
+-    n_lt.location = (120, -120)
++    n_lt.location = (140, -100)
+     n_lt.inputs[1].default_value = 0.0
+     links.new(n_dot.outputs['Value'], n_lt.inputs[0])
+ 
+     n_setmat = nodes.new('GeometryNodeSetMaterialIndex')
+-    n_setmat.location = (120, 60)
++    n_setmat.location = (320, 60)
+     links.new(n_in.outputs['Geometry'], n_setmat.inputs['Geometry'])
+     links.new(n_lt.outputs['Value'], n_setmat.inputs['Selection'])
+     links.new(n_in.outputs['Ghost Slot'], n_setmat.inputs['Material Index'])
+@@ -201,33 +185,6 @@ def _build_node_group():
+     return group
+ 
+ 
+-def _add_transform_dep(driver, obj, prefix):
+-    """Variables 'mudas' solo para marcar dependencia: el driver se re-evalúa
+-    cuando cambian estos canales, aunque la expresión no las nombre — llama
+-    directo a la función registrada, que relee matrix_world por su cuenta."""
+-    # sin los canales SCALE_*, escalar el plano dejaba el preview congelado
+-    canales = ('LOC_X', 'LOC_Y', 'LOC_Z', 'ROT_X', 'ROT_Y', 'ROT_Z',
+-               'SCALE_X', 'SCALE_Y', 'SCALE_Z')
+-    for i, chan in enumerate(canales):
+-        var = driver.variables.new()
+-        var.name = f"{prefix}{i}"
+-        var.type = 'TRANSFORMS'
+-        tgt = var.targets[0]
+-        tgt.id = obj
+-        tgt.transform_type = chan
+-        tgt.transform_space = 'WORLD_SPACE'
+-
+-
+-def _make_driver(mod, socket_id, axis, cutter, kind):
+-    fcurve = mod.id_data.driver_add(_input_path(mod, socket_id), axis)
+-    drv = fcurve.driver
+-    drv.type = 'SCRIPTED'
+-    drv.expression = f"{_DRIVER_NS_KEY}('{kind}', {axis})"
+-    # solo el plano: depender también de la pieza es lo que rompía el preview
+-    # (el driver vive en un modificador de la pieza, no puede depender de ella)
+-    _add_transform_dep(drv, cutter, "c")
+-
+-
+ def add_ghost_modifier(target, cutter):
+     """Crea (o recrea) el modificador fantasma en `target`, en vivo según la
+     transform de `cutter`. No toca target.data en ningún momento."""
+@@ -250,17 +207,20 @@ def add_ghost_modifier(target, cutter):
+     # propias en modificadores (TypeError: id properties not supported)
+     target[_ADDED_BASE_SLOT_KEY] = added_base_slot
+ 
+-    co_id = _socket_identifier(group, "Plane Co")
+-    no_id = _socket_identifier(group, "Plane No")
+-    slot_id = _socket_identifier(group, "Ghost Slot")
++    _set_input(mod, _socket_identifier(group, "Cutter"), cutter)
++    _set_input(mod, _socket_identifier(group, "Ghost Slot"), ghost_index)
+ 
+-    _set_input(mod, co_id, (0.0, 0.0, 0.0))
+-    _set_input(mod, no_id, (0.0, 0.0, 1.0))
+-    _set_input(mod, slot_id, ghost_index)
+ 
+-    for axis in range(3):
+-        _make_driver(mod, co_id, axis, cutter, 'CO')
+-        _make_driver(mod, no_id, axis, cutter, 'NO')
++def _quitar_drivers_viejos(obj):
++    """Archivos guardados con versiones <= 0.25.1 traen seis drivers sobre las
++    entradas del modificador fantasma. Se borran por ruta, sin depender de que
++    el node group viejo siga existiendo."""
++    ad = obj.animation_data
++    if ad is None:
++        return
++    for fc in list(ad.drivers):
++        if MODIFIER_NAME in fc.data_path:
++            ad.drivers.remove(fc)
+ 
+ 
+ def remove_ghost_preview(obj):
+@@ -270,21 +230,8 @@ def remove_ghost_preview(obj):
+     added_base_slot = False
+     if mod is not None:
+         added_base_slot = bool(obj.get(_ADDED_BASE_SLOT_KEY, False))
+-        group = mod.node_group
+-        if group is not None:
+-            # quitar los drivers antes de borrar el modificador: driver_add()
+-            # los guarda en el animation_data del objeto, no "dentro" del
+-            # modificador, así que si no los sacamos primero quedan huérfanos
+-            # apuntando a una ruta que ya no existe
+-            try:
+-                co_id = _socket_identifier(group, "Plane Co")
+-                no_id = _socket_identifier(group, "Plane No")
+-                for axis in range(3):
+-                    obj.driver_remove(_input_path(mod, co_id), axis)
+-                    obj.driver_remove(_input_path(mod, no_id), axis)
+-            except KeyError:
+-                pass
+         obj.modifiers.remove(mod)
++    _quitar_drivers_viejos(obj)
+     if _ADDED_BASE_SLOT_KEY in obj:
+         del obj[_ADDED_BASE_SLOT_KEY]
+ 
+diff --git a/tests/test_ghost_fase1.py b/tests/test_ghost_fase1.py
+new file mode 100644
+index 0000000..c7b2b31
+--- /dev/null
++++ b/tests/test_ghost_fase1.py
+@@ -0,0 +1,179 @@
++"""SiroBuilder - Fase 1: el fantasma aparece SIN drivers y SIN auto-ejecucion.
++
++Uso (desde la raiz del repo, la carpeta que contiene `sirobuilder/`):
++
++    blender -b --python tests/test_ghost_fase1.py
++
++Sale con codigo 0 si todo pasa y 1 si algo falla. Correrlo SIN --enable-autoexec
++es justamente el punto: con la version vieja (drivers) falla, con la nueva pasa.
++
++Romperlo a proposito (regla de la bitacora: un test que nunca fallo no prueba
++nada). Con el arbol limpio:
++
++    git checkout 702c029 -- sirobuilder      # version con drivers
++    blender -b --python tests/test_ghost_fase1.py     # DEBE fallar
++    git checkout HEAD -- sirobuilder         # volver a la nueva
++    blender -b --python tests/test_ghost_fase1.py     # DEBE pasar
++"""
++
++import math
++import os
++import sys
++import traceback
++
++import bpy
++from mathutils import Vector
++
++RAIZ = os.environ.get("SIRO_REPO", os.getcwd())
++sys.path.insert(0, RAIZ)
++
++FALLOS = []
++
++
++def check(nombre, ok, detalle=""):
++    print(f"  [{'OK ' if ok else 'FALLA'}] {nombre} {detalle}")
++    if not ok:
++        FALLOS.append(nombre)
++
++
++def contar_fantasma(obj):
++    from sirobuilder.operators import ghost_preview as gp
++    dg = bpy.context.evaluated_depsgraph_get()
++    dg.update()
++    ev = obj.evaluated_get(dg)
++    me = ev.to_mesh()
++    try:
++        total = len(me.polygons)
++        idx = next((i for i, m in enumerate(obj.data.materials)
++                    if m is not None and m.name == gp.GHOST_MAT_NAME), None)
++        attr = me.attributes.get("material_index")
++        if idx is None or attr is None:
++            return 0, total
++        vals = [0] * total
++        attr.data.foreach_get("value", vals)
++        return sum(1 for v in vals if v == idx), total
++    finally:
++        ev.to_mesh_clear()
++
++
++def frac(obj):
++    n, t = contar_fantasma(obj)
++    return (n / t if t else 0.0), n, t
++
++
++def cerca(valor, esperado, tol=0.01):
++    return abs(valor - esperado) < tol
++
++
++def oraculo(pieza, plano):
++    """Fraccion de caras al otro lado del plano, calculada en Python puro sobre
++    el mesh ORIGINAL (centro de cada cara -> mundo, dot con la normal). No usa
++    nodos, asi que es una vara independiente para el modificador.
++
++    Se compara por cara, no por area: una esfera UV tiene caras mas chicas
++    hacia los polos, y a z=+-0.5 da 67 %/33 % y no 75 %/25 %."""
++    mw = pieza.matrix_world
++    co = plano.matrix_world.translation
++    no = (plano.matrix_world.to_3x3() @ Vector((0.0, 0.0, 1.0))).normalized()
++    polys = pieza.data.polygons
++    n = sum(1 for p in polys if (mw @ p.center - co).dot(no) < 0.0)
++    return n / len(polys)
++
++
++def main():
++    from sirobuilder.operators import cut, ghost_preview as gp
++
++    print(f"Blender {bpy.app.version_string}")
++    auto = bpy.context.preferences.filepaths.use_scripts_auto_execute
++    print(f"Auto Run Python Scripts: {'ON' if auto else 'OFF'}")
++    if auto:
++        print("AVISO: el test vale mas con la auto-ejecucion OFF (no pases --enable-autoexec)")
++
++    try:
++        bpy.utils.register_class(cut.SIRO_OT_add_cut_plane)
++    except ValueError:
++        pass
++    # la version vieja necesitaba esto; la nueva ya no existe
++    if hasattr(gp, "register_driver_function"):
++        gp.register_driver_function()
++
++    for o in list(bpy.data.objects):
++        bpy.data.objects.remove(o, do_unlink=True)
++    bpy.ops.mesh.primitive_uv_sphere_add(segments=96, ring_count=48, radius=1.0)
++    pieza = bpy.context.active_object
++    pieza.name = "Pieza"
++    bpy.ops.siro.add_cut_plane()
++    plano = bpy.data.objects[cut.CUTTER_NAME]
++
++    print("\n[1] Sin Python en el camino")
++    ad = pieza.animation_data
++    ndr = len(ad.drivers) if ad else 0
++    check("la pieza no tiene drivers", ndr == 0, f"({ndr} drivers)")
++    check("hay modificador fantasma", gp.MODIFIER_NAME in pieza.modifiers)
++    check("el plano tiene flecha (mas de 4 vertices)", len(plano.data.vertices) > 4,
++          f"({len(plano.data.vertices)} vertices)")
++
++    print("\n[2] El fantasma sigue al plano (contra el oraculo en Python puro)")
++
++    def contra_oraculo(nombre):
++        bpy.context.view_layer.update()
++        f, n, t = frac(pieza)
++        esp = oraculo(pieza, plano)
++        check(nombre, n > 0 and cerca(f, esp),
++              f"fantasma {n}/{t} = {f:.1%}, oraculo {esp:.1%}")
++
++    for nombre, z in (("plano en el origen", 0.0), ("plano z=+0.5", 0.5), ("plano z=-0.5", -0.5)):
++        plano.location.z = z
++        contra_oraculo(nombre)
++
++    plano.location.z = 0.0
++    plano.rotation_euler.x = math.radians(90)
++    contra_oraculo("plano girado 90 grados")
++
++    plano.rotation_euler.x = math.radians(180)  # normal hacia -Z: se invierte
++    plano.location.z = 0.5
++    contra_oraculo("normal invertida (plano z=+0.5, normal -Z)")
++    plano.rotation_euler.x = 0.0
++
++    print("\n[3] Controles (el contador tiene que poder dar 0 % y 100 %)")
++    plano.location.z = 100.0
++    bpy.context.view_layer.update()
++    check("plano muy arriba = todo fantasma", frac(pieza)[0] > 0.99)
++    plano.location.z = -100.0
++    bpy.context.view_layer.update()
++    check("plano muy abajo = nada de fantasma", frac(pieza)[0] < 0.01)
++
++    print("\n[4] La pieza tambien se mueve (la transform de la pieza cuenta)")
++    plano.location.z = 0.0
++    pieza.location.z = 1.0
++    contra_oraculo("pieza desplazada +1 en Z")
++    pieza.location.z = 0.5
++    contra_oraculo("pieza desplazada +0.5 en Z")
++    pieza.location.z = 0.0
++
++    print("\n[5] Guardar, reabrir y volver a medir (sin handler que reponga nada)")
++    plano.location.z = 0.5
++    bpy.context.view_layer.update()
++    ruta = os.path.join(bpy.app.tempdir or "/tmp", "siro_fase1.blend")
++    bpy.ops.wm.save_as_mainfile(filepath=ruta)
++    bpy.ops.wm.open_mainfile(filepath=ruta)
++    pieza = bpy.data.objects["Pieza"]
++    plano = bpy.data.objects[cut.CUTTER_NAME]
++    contra_oraculo("tras reabrir, plano z=+0.5")
++
++    print("\n[6] Limpieza")
++    gp.remove_all_ghost_previews(bpy.context)
++    check("modificador fuera", gp.MODIFIER_NAME not in pieza.modifiers)
++    check("slots de material como al principio", len(pieza.data.materials) == 0,
++          f"({len(pieza.data.materials)} slots)")
++    check("sin drivers colgando", not (pieza.animation_data and pieza.animation_data.drivers))
++
++
++try:
++    main()
++except Exception:  # noqa: BLE001
++    traceback.print_exc()
++    FALLOS.append("excepcion")
++
++print("\n" + ("TODO OK" if not FALLOS else f"FALLARON: {FALLOS}"))
++sys.exit(0 if not FALLOS else 1)
+-- 
+2.43.0
+
