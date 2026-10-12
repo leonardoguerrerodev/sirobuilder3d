@@ -116,6 +116,22 @@ def _socket_identifier(group, name, in_out='INPUT'):
     raise KeyError(f"Socket '{name}' no encontrado en {group.name}")
 
 
+# Entradas del modificador de nodos. Blender 5.2 las movió de mod["Socket_N"] (propiedad
+# propia del modificador, que ya no acepta) a mod.properties.inputs.Socket_N.value; los
+# drivers se cuelgan del objeto con esa ruta. Hasta 5.1, la forma vieja.
+def _input_path(mod, socket_id):
+    if hasattr(mod, "properties"):
+        return f'modifiers["{mod.name}"].properties.inputs.{socket_id}.value'
+    return f'modifiers["{mod.name}"]["{socket_id}"]'
+
+
+def _set_input(mod, socket_id, value):
+    if hasattr(mod, "properties"):
+        getattr(mod.properties.inputs, socket_id).value = value
+    else:
+        mod[socket_id] = value
+
+
 def _build_node_group():
     """Geometry: por cara, dot(pos_mundo - Plane Co, Plane No) < 0 → slot fantasma"""
     group = bpy.data.node_groups.get(NODEGROUP_NAME)
@@ -203,7 +219,7 @@ def _add_transform_dep(driver, obj, prefix):
 
 
 def _make_driver(mod, socket_id, axis, cutter, kind):
-    fcurve = mod.driver_add(f'["{socket_id}"]', axis)
+    fcurve = mod.id_data.driver_add(_input_path(mod, socket_id), axis)
     drv = fcurve.driver
     drv.type = 'SCRIPTED'
     drv.expression = f"{_DRIVER_NS_KEY}('{kind}', {axis})"
@@ -230,15 +246,17 @@ def add_ghost_modifier(target, cutter):
     group = _build_node_group()
     mod = target.modifiers.new(MODIFIER_NAME, 'NODES')
     mod.node_group = group
-    mod[_ADDED_BASE_SLOT_KEY] = added_base_slot
+    # en el objeto, no en el modificador: Blender 5.2 ya no acepta propiedades
+    # propias en modificadores (TypeError: id properties not supported)
+    target[_ADDED_BASE_SLOT_KEY] = added_base_slot
 
     co_id = _socket_identifier(group, "Plane Co")
     no_id = _socket_identifier(group, "Plane No")
     slot_id = _socket_identifier(group, "Ghost Slot")
 
-    mod[co_id] = (0.0, 0.0, 0.0)
-    mod[no_id] = (0.0, 0.0, 1.0)
-    mod[slot_id] = ghost_index
+    _set_input(mod, co_id, (0.0, 0.0, 0.0))
+    _set_input(mod, no_id, (0.0, 0.0, 1.0))
+    _set_input(mod, slot_id, ghost_index)
 
     for axis in range(3):
         _make_driver(mod, co_id, axis, cutter, 'CO')
@@ -251,7 +269,7 @@ def remove_ghost_preview(obj):
     mod = obj.modifiers.get(MODIFIER_NAME)
     added_base_slot = False
     if mod is not None:
-        added_base_slot = bool(mod.get(_ADDED_BASE_SLOT_KEY, False))
+        added_base_slot = bool(obj.get(_ADDED_BASE_SLOT_KEY, False))
         group = mod.node_group
         if group is not None:
             # quitar los drivers antes de borrar el modificador: driver_add()
@@ -262,11 +280,13 @@ def remove_ghost_preview(obj):
                 co_id = _socket_identifier(group, "Plane Co")
                 no_id = _socket_identifier(group, "Plane No")
                 for axis in range(3):
-                    mod.driver_remove(f'["{co_id}"]', axis)
-                    mod.driver_remove(f'["{no_id}"]', axis)
+                    obj.driver_remove(_input_path(mod, co_id), axis)
+                    obj.driver_remove(_input_path(mod, no_id), axis)
             except KeyError:
                 pass
         obj.modifiers.remove(mod)
+    if _ADDED_BASE_SLOT_KEY in obj:
+        del obj[_ADDED_BASE_SLOT_KEY]
 
     mats = obj.data.materials
     ghost = bpy.data.materials.get(GHOST_MAT_NAME)
