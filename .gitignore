@@ -3,3 +3,6 @@ __pycache__/
 *.blend
 *.blend1
 /*.png
+respaldo_siro_*/
+resultado_fase1.txt
+diag_fantasma_*.txt

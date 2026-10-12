@@ -1,2 +1,148 @@
 ### 0. Comprobaciones previas
-El codigo ya no es el viejo (no tiene register_driver_function): el parche parece aplicado.
+Tu arbol tiene el codigo: nuevo
+Respaldo en respaldo_siro_2026-10-12_203116
+Codigo viejo extraido de 702c029 en /run/media/xaski/7c0ba586-7758-4419-b3de-f524b9c9a1fb/!GitHub/!Obsedium/!SiroBuilder(Blender)/respaldo_siro_2026-10-12_203116/viejo
+
+### 1. Diagnostico del codigo VIEJO (auto-ejecucion OFF)
+00:00.014  color_management | ERROR OpenColorIO Error: Error: Loading the OCIO profile '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' failed. This .ocio config  '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' is version 2.5. This version of the OpenColorIO library (2.4.2) is not able to load that config version.
+                            | The minor version 5 is not supported for major version 2. Maximum minor version is 4.
+00:00.014  color_management | Using fallback mode for management
+00:00.893  blend            | Read blend: "/tmp/blender_7I8VYl/siro_fase1.blend"
+Blender 5.2.0 LTS (hash unknown built 2026-07-19 00:00:00)
+Blender 5.2.0 LTS
+Auto Run Python Scripts: OFF
+
+[1] Sin Python en el camino
+  [FALLA] la pieza no tiene drivers (6 drivers)
+  [OK ] hay modificador fantasma 
+  [FALLA] el plano tiene flecha (mas de 4 vertices) (4 vertices)
+
+[2] El fantasma sigue al plano (contra el oraculo en Python puro)
+  [OK ] plano en el origen fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+  [OK ] plano z=-0.5 fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [OK ] plano girado 90 grados fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] normal invertida (plano z=+0.5, normal -Z) fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[3] Controles (el contador tiene que poder dar 0 % y 100 %)
+  [OK ] plano muy arriba = todo fantasma 
+  [OK ] plano muy abajo = nada de fantasma 
+
+[4] La pieza tambien se mueve (la transform de la pieza cuenta)
+  [FALLA] pieza desplazada +1 en Z fantasma 0/4608 = 0.0%, oraculo 0.0%
+  [OK ] pieza desplazada +0.5 en Z fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[5] Guardar, reabrir y volver a medir (sin handler que reponga nada)
+Info: Saved as "siro_fase1.blend"
+  [OK ] tras reabrir, plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+
+[6] Limpieza
+  [OK ] modificador fuera 
+  [OK ] slots de material como al principio (0 slots)
+  [OK ] sin drivers colgando 
+
+FALLARON: ['la pieza no tiene drivers', 'el plano tiene flecha (mas de 4 vertices)', 'pieza desplazada +1 en Z']
+
+### 2. Test de la Fase 1 contra el codigo VIEJO (debe FALLAR en drivers y flecha)
+00:00.014  color_management | ERROR OpenColorIO Error: Error: Loading the OCIO profile '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' failed. This .ocio config  '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' is version 2.5. This version of the OpenColorIO library (2.4.2) is not able to load that config version.
+                            | The minor version 5 is not supported for major version 2. Maximum minor version is 4.
+00:00.014  color_management | Using fallback mode for management
+00:00.868  blend            | Read blend: "/tmp/blender_r7zSVv/siro_fase1.blend"
+Blender 5.2.0 LTS (hash unknown built 2026-07-19 00:00:00)
+Blender 5.2.0 LTS
+Auto Run Python Scripts: OFF
+
+[1] Sin Python en el camino
+  [FALLA] la pieza no tiene drivers (6 drivers)
+  [OK ] hay modificador fantasma 
+  [FALLA] el plano tiene flecha (mas de 4 vertices) (4 vertices)
+
+[2] El fantasma sigue al plano (contra el oraculo en Python puro)
+  [OK ] plano en el origen fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+  [OK ] plano z=-0.5 fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [OK ] plano girado 90 grados fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] normal invertida (plano z=+0.5, normal -Z) fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[3] Controles (el contador tiene que poder dar 0 % y 100 %)
+  [OK ] plano muy arriba = todo fantasma 
+  [OK ] plano muy abajo = nada de fantasma 
+
+[4] La pieza tambien se mueve (la transform de la pieza cuenta)
+  [OK ] pieza desplazada +1 en Z fantasma 0/4608 = 0.0%, oraculo 0.0%
+  [OK ] pieza desplazada +0.5 en Z fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[5] Guardar, reabrir y volver a medir (sin handler que reponga nada)
+Info: Saved as "siro_fase1.blend"
+  [OK ] tras reabrir, plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+
+[6] Limpieza
+  [OK ] modificador fuera 
+  [OK ] slots de material como al principio (0 slots)
+  [OK ] sin drivers colgando 
+
+FALLARON: ['la pieza no tiene drivers', 'el plano tiene flecha (mas de 4 vertices)']
+
+### 3. Test de la Fase 1 contra el codigo NUEVO (el de tu arbol; debe dar TODO OK)
+00:00.014  color_management | ERROR OpenColorIO Error: Error: Loading the OCIO profile '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' failed. This .ocio config  '/usr/share/blender/5.2/datafiles/colormanagement/config.ocio' is version 2.5. This version of the OpenColorIO library (2.4.2) is not able to load that config version.
+                            | The minor version 5 is not supported for major version 2. Maximum minor version is 4.
+00:00.014  color_management | Using fallback mode for management
+00:00.864  blend            | Read blend: "/tmp/blender_7ac63l/siro_fase1.blend"
+Blender 5.2.0 LTS (hash unknown built 2026-07-19 00:00:00)
+Blender 5.2.0 LTS
+Auto Run Python Scripts: OFF
+
+[1] Sin Python en el camino
+  [OK ] la pieza no tiene drivers (0 drivers)
+  [OK ] hay modificador fantasma 
+  [OK ] el plano tiene flecha (mas de 4 vertices) (22 vertices)
+
+[2] El fantasma sigue al plano (contra el oraculo en Python puro)
+  [OK ] plano en el origen fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+  [OK ] plano z=-0.5 fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [OK ] plano girado 90 grados fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] normal invertida (plano z=+0.5, normal -Z) fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[3] Controles (el contador tiene que poder dar 0 % y 100 %)
+  [OK ] plano muy arriba = todo fantasma 
+  [OK ] plano muy abajo = nada de fantasma 
+
+[4] La pieza tambien se mueve (la transform de la pieza cuenta)
+  [OK ] pieza desplazada +1 en Z fantasma 0/4608 = 0.0%, oraculo 0.0%
+  [OK ] pieza desplazada +0.5 en Z fantasma 1536/4608 = 33.3%, oraculo 33.3%
+
+[5] Guardar, reabrir y volver a medir (sin handler que reponga nada)
+Info: Saved as "siro_fase1.blend"
+  [OK ] tras reabrir, plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+
+[6] Limpieza
+  [OK ] modificador fuera 
+  [OK ] slots de material como al principio (0 slots)
+  [OK ] sin drivers colgando 
+
+TODO OK
+
+################ RESUMEN ################
+--- Diagnostico viejo, auto-ejecucion OFF:
+Auto Run Python Scripts: OFF
+  [OK ] plano en el origen fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+  [OK ] plano z=-0.5 fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [OK ] plano girado 90 grados fantasma 2304/4608 = 50.0%, oraculo 50.0%
+  [OK ] normal invertida (plano z=+0.5, normal -Z) fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [FALLA] pieza desplazada +1 en Z fantasma 0/4608 = 0.0%, oraculo 0.0%
+  [OK ] pieza desplazada +0.5 en Z fantasma 1536/4608 = 33.3%, oraculo 33.3%
+  [OK ] tras reabrir, plano z=+0.5 fantasma 3072/4608 = 66.7%, oraculo 66.7%
+
+--- Test contra codigo VIEJO (codigo de salida 1, se espera 1):
+Auto Run Python Scripts: OFF
+  [FALLA] la pieza no tiene drivers (6 drivers)
+  [FALLA] el plano tiene flecha (mas de 4 vertices) (4 vertices)
+FALLARON: ['la pieza no tiene drivers', 'el plano tiene flecha (mas de 4 vertices)']
+
+--- Test contra codigo NUEVO (codigo de salida 0, se espera 0):
+Auto Run Python Scripts: OFF
+TODO OK
+
+Revisar: git status && git diff --stat
