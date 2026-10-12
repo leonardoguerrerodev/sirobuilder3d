@@ -119,7 +119,7 @@ def main():
         bpy.context.view_layer.update()
         f, n, t = frac(pieza)
         esp = oraculo(pieza, plano)
-        check(nombre, n > 0 and cerca(f, esp),
+        check(nombre, (n > 0 or esp == 0) and cerca(f, esp),
               f"fantasma {n}/{t} = {f:.1%}, oraculo {esp:.1%}")
 
     for nombre, z in (("plano en el origen", 0.0), ("plano z=+0.5", 0.5), ("plano z=-0.5", -0.5)):
